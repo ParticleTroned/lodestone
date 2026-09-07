@@ -11,6 +11,7 @@
 
 #include "WebUIBridge.h"
 
+#include "Config.h"
 #include "WebUIBackend.h"
 
 #include <array>
@@ -65,18 +66,70 @@ namespace Lodestone::Core::WebUIBridge
 			return (g_active && g_active->IsAvailable()) ? g_active : nullptr;
 		}
 
+		// What Lodestone.ini's WebUIBackend key asked for. Empty means auto,
+		// which is also what an absent file and an absent key mean.
+		//
+		// Read once, from Resolve(), because the choice is made once.
+		std::string ReadRequestedBackend()
+		{
+			std::string requested;
+
+			Config::ForEachPair([&requested](std::string_view a_key, std::string_view a_value) {
+				if (a_key == "webuibackend") {
+					requested = a_value;
+				}
+			});
+
+			// Deliberately NOT scoped to a [WebUI] section: the reader is flat,
+			// and the key is named so it cannot collide. See Config.h.
+			return requested;
+		}
+
 		// Picks the backend for this session, once, and says so in one line.
 		//
 		// The line is the whole diagnostic surface of the choice: from outside
 		// the process, "no panel" looks the same whether nothing is installed,
-		// both are installed and one lost, or the bridge failed. It names the
-		// winner and, when there was a contest, the loser.
+		// both are installed and one lost, the user asked for one that is not
+		// there, or the bridge failed. It names the winner and, when there was
+		// a contest, the loser.
 		void Resolve()
 		{
 			if (g_resolved) {
 				return;
 			}
 			g_resolved = true;
+
+			const std::string requested = ReadRequestedBackend();
+
+			// An explicit name is honoured or nothing is. Falling through to
+			// the other backend would make "force this one" mean "prefer this
+			// one", which is a different setting and not the one that was
+			// written down.
+			if (!requested.empty() && !Config::EqualsNoCase(requested, "auto")) {
+				for (const auto& accessor : kBackendOrder) {
+					auto* backend = accessor();
+					if (Config::EqualsNoCase(requested, backend->Name())) {
+						if (backend->IsAvailable()) {
+							g_active = backend;
+							spdlog::info("WebUIBridge: {} found - bridge active. Chosen by "
+										 "WebUIBackend in Lodestone.ini.",
+								backend->DisplayName());
+						} else {
+							spdlog::warn("WebUIBridge: Lodestone.ini asks for '{}', which is not "
+										 "installed - bridge inactive. Set WebUIBackend to auto, or "
+										 "remove the line, to use whichever backend is present.",
+								requested);
+						}
+						return;
+					}
+				}
+
+				// A typo must not silently turn the panel off for someone, so
+				// this falls through to auto rather than refusing.
+				spdlog::warn("WebUIBridge: Lodestone.ini asks for backend '{}', which this version "
+							 "does not know - choosing automatically instead.",
+					requested);
+			}
 
 			std::string alsoPresent;
 
@@ -109,7 +162,8 @@ namespace Lodestone::Core::WebUIBridge
 				spdlog::info("WebUIBridge: {} found - bridge active.", g_active->DisplayName());
 			} else {
 				spdlog::info("WebUIBridge: {} found - bridge active. Also installed: {} - not used, "
-							 "because one backend per session is deliberate.",
+							 "because one backend per session is deliberate. Set WebUIBackend in "
+							 "Lodestone.ini to choose.",
 					g_active->DisplayName(), alsoPresent);
 			}
 		}

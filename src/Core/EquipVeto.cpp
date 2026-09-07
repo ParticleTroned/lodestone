@@ -8,10 +8,11 @@
 
 #include "EquipVeto.h"
 
+#include "Config.h"
+
 #include <atomic>
 #include <cctype>
 #include <chrono>
-#include <fstream>
 #include <mutex>
 #include <safetyhook.hpp>
 #include <shared_mutex>
@@ -25,8 +26,6 @@ namespace Lodestone::Core::EquipVeto
 {
 	namespace
 	{
-		constexpr auto kConfigPath = "Data/SKSE/Plugins/Lodestone.ini"sv;
-
 		// How often the running totals get a line. Short enough to show a rate,
 		// long enough not to become the load it is measuring.
 		constexpr std::int64_t kSummaryIntervalMs{ 5000 };
@@ -103,39 +102,9 @@ namespace Lodestone::Core::EquipVeto
 				.count();
 		}
 
-		std::string Trim(std::string_view a_text)
-		{
-			const auto first = a_text.find_first_not_of(" \t\r\n");
-			if (first == std::string_view::npos) {
-				return {};
-			}
-			const auto last = a_text.find_last_not_of(" \t\r\n");
-			return std::string{ a_text.substr(first, last - first + 1) };
-		}
-
-		std::string ToLower(std::string a_text)
-		{
-			for (auto& c : a_text) {
-				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			}
-			return a_text;
-		}
-
-		bool EqualsNoCase(std::string_view a_lhs, std::string_view a_rhs)
-		{
-			if (a_lhs.size() != a_rhs.size()) {
-				return false;
-			}
-
-			for (std::size_t i = 0; i < a_lhs.size(); ++i) {
-				if (std::tolower(static_cast<unsigned char>(a_lhs[i])) !=
-					std::tolower(static_cast<unsigned char>(a_rhs[i]))) {
-					return false;
-				}
-			}
-
-			return true;
-		}
+		// Both text helpers this file needs now live in Core/Config, next to the
+		// reader that produces the strings they compare.
+		using Config::EqualsNoCase;
 
 		// The plugin that DEFINED a form. GetFile(0) is the first file in the
 		// source chain, so it is the plugin that CREATED the record rather than
@@ -203,8 +172,8 @@ namespace Lodestone::Core::EquipVeto
 				return nullptr;
 			}
 
-			const auto idText = Trim(a_value.substr(0, bar));
-			const auto modName = Trim(a_value.substr(bar + 1));
+			const auto idText = Config::Trim(a_value.substr(0, bar));
+			const auto modName = Config::Trim(a_value.substr(bar + 1));
 
 			if (idText.empty() || modName.empty()) {
 				spdlog::error("EquipVeto: config line \"{} = {}\" is missing the form id or the plugin "
@@ -244,30 +213,11 @@ namespace Lodestone::Core::EquipVeto
 
 		void LoadConfig()
 		{
-			std::ifstream file{ std::string{ kConfigPath } };
-			if (!file) {
-				spdlog::info("EquipVeto: no config at \"{}\" - diagnostics keep their defaults. This does "
-							 "not affect what is refused.",
-					kConfigPath);
-				return;
-			}
-
-			std::string line;
-			while (std::getline(file, line)) {
-				const auto trimmed = Trim(line);
-				if (trimmed.empty() || trimmed.front() == ';' || trimmed.front() == '#' ||
-					trimmed.front() == '[') {
-					continue;
-				}
-
-				const auto eq = trimmed.find('=');
-				if (eq == std::string::npos) {
-					continue;
-				}
-
-				const auto key = ToLower(Trim(std::string_view{ trimmed }.substr(0, eq)));
-				const auto value = Trim(std::string_view{ trimmed }.substr(eq + 1));
-
+			// The parsing moved to Core/Config when the WebUI bridge became the
+			// second module needing configuration - see the note at the top of
+			// Config.h. Nothing about which keys this module reads, or what
+			// they mean, changed with it.
+			const bool found = Config::ForEachPair([](std::string_view key, std::string_view value) {
 				if (key == "logequipobject") {
 					g_logEquipObject = (value != "0");
 				} else if (key == "watchactor") {
@@ -288,6 +238,12 @@ namespace Lodestone::Core::EquipVeto
 						}
 					}
 				}
+			});
+
+			if (!found) {
+				spdlog::info("EquipVeto: no config at \"{}\" - diagnostics keep their defaults. This does "
+							 "not affect what is refused.",
+					Config::kPath);
 			}
 		}
 
