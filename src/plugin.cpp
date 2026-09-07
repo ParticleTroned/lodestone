@@ -110,7 +110,13 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
         SKSE::stl::report_and_fail("SKSE log directory not provided.");
     }
 
-    SKSE::Init(a_skse);
+    // a_log = false: with the default (true), CommonLibSSE-NG builds its own
+    // logger on top of the one Log::Init() just configured - it truncates the
+    // file, replaces the pattern, and drops trace to info in release builds.
+    // Confirmed in src/SKSE/API.cpp:97-100 and src/SKSE/Logger.cpp:126-151 of
+    // v6.7.1. Do not drop the second argument. Campaign
+    // 2026-09-04-skse-init-preserva-o-logger-do-plugin.
+    SKSE::Init(a_skse, false);
 
     spdlog::info("{} v{} loaded successfully.",
         Lodestone::Version::kProjectName, Lodestone::Version::kString);
