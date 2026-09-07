@@ -29,6 +29,7 @@
 #include "API.h"
 #include "SKSELoader.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -149,20 +150,41 @@ namespace Lodestone::Core
 			IWebUIBackend::ViewHandle handle  = 0;
 			Meridian::CEF::IBrowser*  browser = nullptr;
 
-			// Still waiting for IsPageLoaded(). Once this is set the view is
-			// no longer watched - either because it loaded, or because it ran
-			// out of time.
-			bool pageReady = false;
+			// Whether the page is loaded RIGHT NOW. This is a state, not a
+			// milestone, and the difference is the whole reason the watcher
+			// keeps looking after the first success - see aliases below.
+			bool loaded = false;
+
+			// Whether ViewReady has been reported. Once only: a consumer is
+			// told a view became usable, and being told twice is a change to
+			// published behavior, not a bug fix.
+			bool announced = false;
+
+			// Whether the timeout has already been logged, so a view that
+			// never loads says so once instead of every hundred milliseconds.
+			bool gaveUp = false;
 
 			// When the browser was asked for, which is what kReadyTimeout is
 			// measured against.
 			std::chrono::steady_clock::time_point createdAt = std::chrono::steady_clock::now();
 
-			// Bare-window aliases owed to this browser once its page exists.
-			// A registration that happens before the page has loaded cannot
-			// install its alias yet, because the script would run against a
-			// document that is about to be replaced.
-			std::vector<std::string> pendingAliases;
+			// Every bare-window alias this view has been given, kept for the
+			// life of the view rather than consumed on first use.
+			//
+			// RE-INSTALLED ON EVERY PAGE LOAD, AND THAT IS A BUG FIX. An alias
+			// is a script, so it belongs to the document that was loaded when
+			// it ran - a page load replaces that document and the alias is
+			// gone. The binding underneath it survives, because the platform
+			// replays AddFunctionCallback registrations on load (IBrowser.h),
+			// so the two would silently drift apart: Lodestone.<fn> keeps
+			// working and window.<fn> stops existing.
+			//
+			// That failure is invisible from the game. The page calls
+			// window.<fn> and nothing happens - no error, no log line, and the
+			// consumer's inbound channel is simply dead. It was found by
+			// reasoning from a position reset the author reported on
+			// 2026-09-07, not by anything failing loudly.
+			std::vector<std::string> aliases;
 		};
 
 		std::vector<BrowserRecord> g_browsers;
@@ -287,9 +309,15 @@ namespace Lodestone::Core
 
 		// --- Watching for the page to load --------------------------------------
 
-		// How many views are still waiting on their page. Read by the watcher
-		// thread, written on the game thread.
-		std::atomic<int> g_loading{ 0 };
+		// How many live views there are. Read by the watcher thread, written on
+		// the game thread.
+		//
+		// EVERY VIEW IS WATCHED FOR ITS WHOLE LIFE, not just until it first
+		// loads, because a page can be replaced afterwards and the aliases have
+		// to go back in when it is. The cost of that is two virtual calls per
+		// view per hundred milliseconds - measured against a game frame, it is
+		// nothing, and it buys a channel that would otherwise die in silence.
+		std::atomic<int> g_watchedViews{ 0 };
 
 		// Whether the watcher thread has been started. It is started at most
 		// once per process.
@@ -308,31 +336,49 @@ namespace Lodestone::Core
 			const auto now = std::chrono::steady_clock::now();
 
 			for (auto& record : g_browsers) {
-				if (record.pageReady || !record.browser) {
+				if (!record.browser) {
 					continue;
 				}
 
-				if (record.browser->IsBrowserReady() && record.browser->IsPageLoaded()) {
-					record.pageReady = true;
-					g_loading.fetch_sub(1, std::memory_order_acq_rel);
+				const bool nowLoaded = record.browser->IsBrowserReady() && record.browser->IsPageLoaded();
 
-					for (const auto& function : record.pendingAliases) {
+				// The rising edge, and it happens more than once. The first one
+				// is the view becoming usable; every later one is the page
+				// having been replaced under us, which is when the aliases have
+				// to go back in.
+				if (nowLoaded && !record.loaded) {
+					record.loaded = true;
+
+					for (const auto& function : record.aliases) {
 						InstallAlias(record.browser, function);
 					}
-					record.pendingAliases.clear();
 
-					try {
-						WebUIBackendCallbacks::ViewReady(WebUIBackends::MeridianUI(), record.handle);
-					} catch (...) {
-						spdlog::error("MeridianUIBackend: reporting a ready view threw - the view is "
-									  "usable but no ready event was sent.");
+					if (!record.announced) {
+						record.announced = true;
+						try {
+							WebUIBackendCallbacks::ViewReady(WebUIBackends::MeridianUI(), record.handle);
+						} catch (...) {
+							spdlog::error("MeridianUIBackend: reporting a ready view threw - the view "
+										  "is usable but no ready event was sent.");
+						}
+					} else {
+						// Worth a line, because it is the only visible trace
+						// that a consumer's page state was thrown away. The
+						// bridge does NOT re-announce readiness here - see the
+						// note on `announced`.
+						spdlog::info("MeridianUIBackend: a view's page reloaded - JS bindings were "
+									 "re-installed, but anything the page itself was holding is gone.");
 					}
 					continue;
 				}
 
-				if (now - record.createdAt >= kReadyTimeout) {
-					record.pageReady = true;  // stop watching, not "it loaded"
-					g_loading.fetch_sub(1, std::memory_order_acq_rel);
+				if (!nowLoaded && record.loaded) {
+					record.loaded = false;
+					continue;
+				}
+
+				if (!record.announced && !record.gaveUp && now - record.createdAt >= kReadyTimeout) {
+					record.gaveUp = true;
 					spdlog::error("MeridianUIBackend: a view did not finish loading after {} seconds - "
 								  "no ready event will be sent for it. Check that the page exists "
 								  "under Data\\MeridianUI\\Lodestone.",
@@ -359,7 +405,7 @@ namespace Lodestone::Core
 			for (;;) {
 				std::this_thread::sleep_for(kReadyPollInterval);
 
-				if (g_loading.load(std::memory_order_acquire) <= 0) {
+				if (g_watchedViews.load(std::memory_order_acquire) <= 0) {
 					continue;
 				}
 
@@ -597,7 +643,7 @@ namespace Lodestone::Core
 							 "(the backend made it visible at creation: {}).",
 					a_viewId, url, visibleAtCreation);
 
-				g_loading.fetch_add(1, std::memory_order_acq_rel);
+				g_watchedViews.fetch_add(1, std::memory_order_acq_rel);
 				StartWatcher();
 				return static_cast<ViewHandle>(handle);
 			}
@@ -611,12 +657,9 @@ namespace Lodestone::Core
 
 				for (std::size_t i = 0; i < g_browsers.size(); ++i) {
 					if (g_browsers[i].handle == a_view) {
-						// A view destroyed while still loading has to stop being
-						// counted, or the watcher keeps posting a task per
-						// interval for the rest of the session over nothing.
-						if (!g_browsers[i].pageReady) {
-							g_loading.fetch_sub(1, std::memory_order_acq_rel);
-						}
+						// The view stops being watched when it stops existing,
+						// and not before - see g_watchedViews.
+						g_watchedViews.fetch_sub(1, std::memory_order_acq_rel);
 						g_browsers.erase(g_browsers.begin() + static_cast<std::ptrdiff_t>(i));
 						break;
 					}
@@ -705,12 +748,17 @@ namespace Lodestone::Core
 				record->browser->AddFunctionCallback(info);
 
 				// The bare-window alias that makes a Prisma-shaped page work
-				// here. It is a script, so it needs a document: if the page has
-				// not loaded yet, the watcher installs it when it does.
-				if (record->pageReady) {
+				// here. Remembered for the life of the view, because it is a
+				// script and every page load throws it away - the watcher puts
+				// it back on each one. Installed now as well if there is already
+				// a document to install it into.
+				if (std::find(record->aliases.begin(), record->aliases.end(), g_slotNames[a_slot]) ==
+					record->aliases.end()) {
+					record->aliases.push_back(g_slotNames[a_slot]);
+				}
+
+				if (record->loaded) {
 					InstallAlias(record->browser, g_slotNames[a_slot]);
-				} else {
-					record->pendingAliases.push_back(g_slotNames[a_slot]);
 				}
 			}
 		};
