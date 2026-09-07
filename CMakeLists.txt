@@ -111,15 +111,40 @@ add_commonlibsse_plugin(
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 
+# /utf-8 - required by the vendored Meridian UI API headers, which carry UTF-8
+# bytes (em dashes and a multiplication sign) inside their doc comments. Without
+# it MSVC reads the source as the system codepage, and on a non-UTF-8 locale
+# those bytes decode to mojibake or raise C4819. Meridian's own author guide
+# names this flag as a requirement for consuming its headers.
+#
+# This does NOT relax the project's own ASCII rule: our sources stay ASCII, and
+# check_ascii.py skips extern/ anyway. The flag exists for the third-party bytes
+# we are not allowed to edit.
+target_compile_options(${PROJECT_NAME} PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+
 target_link_libraries(${PROJECT_NAME} PRIVATE safetyhook::safetyhook)
 
 # Where the generated Version.h is found by #include "Version.h", and where the
-# PrismaUI API header is found by #include "PrismaUI_API.h". That header is not
-# tracked here - it is third-party, under its own license - and has to be copied
-# into extern/prismaui-api/ before building. See the README in that folder.
+# two web UI backends' API headers are found.
+#
+# The two are NOT tracked the same way, and the difference is licensing, not
+# preference:
+#
+#   extern/prismaui-api/     NOT tracked. The Prisma UI License is proprietary
+#                            and source-available, and adds restrictions this
+#                            GPL-3.0-only repository cannot carry. Copy the
+#                            header in by hand before building - the README in
+#                            that folder says from where.
+#   extern/meridianui-api/   TRACKED. Meridian UI's API headers are plain MIT,
+#                            which adds no restriction, so they are vendored
+#                            with their LICENSE-MIT alongside.
+#
+# Neither backend is a dependency: both are detected at runtime and the bridge
+# falls through to sentinels when neither is installed.
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/prismaui-api"
+    "${CMAKE_CURRENT_SOURCE_DIR}/extern/meridianui-api"
 )
 
 # PCH.h is mandatory for CommonLibSSE-NG. Force-included in every file of the
