@@ -798,8 +798,18 @@ Int Function GetEquipBlockCount() global native
 ; Papyrus-only mod cannot reach one at all, and cannot even ask whether one is
 ; installed.
 ;
-; The backend supported today is Prisma UI. Ask WebUIGetBackend at runtime - do
-; not assume.
+; Two backends are supported: Meridian UI, since DLL 1.21.0, and Prisma UI,
+; since 1.17.0. ONE of them is used per session. Ask WebUIGetBackend at runtime
+; if you want to know which - do not assume, and do not branch on it: ask
+; WebUIHasCapability when the answer decides something.
+;
+; WHICH ONE YOU GET, when both are installed: Meridian UI, unless the user says
+; otherwise with WebUIBackend in Data\SKSE\Plugins\Lodestone.ini. The choice is
+; made once at load and the log line says which won.
+;
+; If you need Meridian UI specifically, gate on GetVersion() >= 1021000. If any
+; backend will do - which is the point of this surface - gate on 1017000 and ask
+; WebUIAvailable.
 ;
 ; THIS SURFACE WAS RENAMED IN 1.18.0. The 1.17.x names still answer and are
 ; listed at the end of this section, each pointing at its replacement. They are
@@ -857,9 +867,20 @@ Bool Function WebUIAvailable() global native
 ; loads index.html inside your MyMod view folder.
 ;
 ; PACKAGING, AND THIS PART IS SPECIFIC TO THE BACKEND YOU ARE RUNNING RATHER THAN
-; PART OF THIS CONTRACT: with Prisma UI the view root is Data\PrismaUI\views, so
-; that example reads Data\PrismaUI\views\MyMod\index.html. Another backend roots
-; it somewhere else. The path you pass does not change; where it is rooted does.
+; PART OF THIS CONTRACT. The path you pass does not change; where it is rooted
+; does:
+;
+;   Prisma UI      Data\PrismaUI\views\<asViewPath>
+;   Meridian UI    Data\MeridianUI\Lodestone\<asViewPath>
+;
+; So "MyMod/index.html" reads Data\PrismaUI\views\MyMod\index.html under one and
+; Data\MeridianUI\Lodestone\MyMod\index.html under the other.
+;
+; SHIP YOUR PAGE TO BOTH ROOTS if you want to work with either backend, and that
+; is the same folder copied twice, not two pages: the same file was measured
+; working unmodified on both. The Meridian root is shared by every consumer of
+; this bridge, which is why your own folder name sits inside it - it is what
+; keeps two mods apart there.
 ;
 ; Returns True when the request was accepted - NOT when the panel is on screen.
 ; Wait for LodestoneWebUIViewReady, or poll WebUIIsViewReady, before calling
@@ -933,8 +954,8 @@ Bool Function WebUIDestroyView(String asViewId) global native
 ; for an empty name, or when the slots are full.
 Bool Function WebUIRegisterListener(String asViewId, String asJsFunction, String asModEvent) global native
 
-; Name of the active web UI backend, for example "PrismaUI". Empty string when
-; no backend is present.
+; Name of the active web UI backend - "MeridianUI" or "PrismaUI" today. Empty
+; string when no backend is present.
 ;
 ; THIS IS FOR YOUR LOG, NOT FOR YOUR CONTROL FLOW. Do not branch on it. A
 ; consumer that writes If WebUIGetBackend() == "PrismaUI" has moved the vendor
@@ -953,6 +974,18 @@ String Function WebUIGetBackend() global native
 ;   "focus-stack"  can two views hold focus independently
 ;   "view-order"   can a view stacking order be set
 ;   "inspector"    can a developer inspector be opened on a view
+;
+; THE ANSWERS DEPEND ON THE BACKEND, WHICH IS THE ENTIRE POINT OF ASKING HERE
+; RATHER THAN ASKING WHICH BACKEND IT IS. As of 1.21.0:
+;
+;                  Prisma UI   Meridian UI
+;   focus-stack    False       False
+;   view-order     True        True
+;   inspector      True        False
+;
+; "focus-stack" answers False on both, for different reasons - one has no focus
+; stack, the other arbitrates focus so that exactly one view holds it at a time -
+; and a consumer asking the question does not have to care which.
 ;
 ; Returns False when no backend is present.
 Bool Function WebUIHasCapability(String asCapability) global native

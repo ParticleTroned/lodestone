@@ -30,7 +30,7 @@ Currently implemented. Every module is Core - it never knows a consumer by name.
 | ChannelInfo | 1.9.0 | `GetChannelContributorCount()`, `GetChannelContributorPlugin()` |
 | EquipVeto | 1.16.0 | `BlockEquip()`, `UnblockEquip()`, `ClearEquipBlocks()`, `IsEquipBlocked()`, `GetEquipBlockCount()` |
 | Incapacitation | 1.10.0 (usable from 1.11.0 - see below) | `KnockoutActor()`, `WakeActor()`, `KnockoutFall()`, `KnockoutRecover()`, `IsManagedUnconscious()`, `GetActorLifeState()`, `RegisterForActorWoke()`, `UnregisterForActorWoke()`, `RegisterForActorWokeAlias()`, `UnregisterForActorWokeAlias()`, event `OnActorWoke` |
-| WebUIBridge | 1.17.0 (as PrismaBridge; renamed in 1.18.0, when the surface stopped naming one supplier) | `WebUIAvailable()`, `WebUICreateView()`, `WebUIIsViewReady()`, `WebUICall()`, `WebUIShow()`, `WebUIHide()`, `WebUIIsViewVisible()`, `WebUIDestroyView()`, `WebUIRegisterListener()`, `WebUIGetBackend()`, `WebUIHasCapability()`, `WebUIGetViewState()`, `WebUIGetListenerSlotsFree()`, event `LodestoneWebUIViewReady`. The nine 1.17.x `Prisma*` names still answer, and so does the event `LodestonePrismaViewReady` - both are sent from the same point, and the old names go away in 2.0.0. Needs a web UI backend installed; Prisma UI is the one supported today, and the module is inert and silent without it |
+| WebUIBridge | 1.17.0 (as PrismaBridge; renamed in 1.18.0, when the surface stopped naming one supplier) | `WebUIAvailable()`, `WebUICreateView()`, `WebUIIsViewReady()`, `WebUICall()`, `WebUIShow()`, `WebUIHide()`, `WebUIIsViewVisible()`, `WebUIDestroyView()`, `WebUIRegisterListener()`, `WebUIGetBackend()`, `WebUIHasCapability()`, `WebUIGetViewState()`, `WebUIGetListenerSlotsFree()`, event `LodestoneWebUIViewReady`. The nine 1.17.x `Prisma*` names still answer, and so does the event `LodestonePrismaViewReady` - both are sent from the same point, and the old names go away in 2.0.0. Needs a web UI backend installed - either [Meridian UI](https://www.nexusmods.com/skyrimspecialedition/mods/190723) or [Prisma UI](https://www.nexusmods.com/skyrimspecialedition/mods/148718), supported since 1.21.0 and 1.17.0 - and the module is inert and silent without either. **Neither is a dependency:** both are detected at runtime, one is used per session, and with neither installed every function above returns its sentinel and nothing is written to the log. Which one is in use is `WebUIGetBackend()`, and `WebUIBackend` in `Lodestone.ini` chooses when both are installed |
 
 **Detection is a channel with no hook behind it yet**, and that is deliberate rather than unfinished. It scales a detection value you compute yourself, with the same shape as the magic scaling channels. Nothing applies the composed pair to the engine's own detection calculation, and after the investigation described below, nothing is going to: a consumer that wants to suppress or scale detection is better served by an existing, widely installed dependency than by this framework reimplementing it. The channel remains useful for what it always did - letting two mods compose a detection value they compute themselves instead of one of them silently losing.
 
@@ -182,7 +182,12 @@ CommonLibSSE-NG comes from a git submodule pinned to a release tag; vcpkg covers
 git submodule update --init --recursive
 ```
 
-One header is not in the repository and has to be copied in by hand: `extern/prismaui-api/PrismaUI_API.h`, the Prisma UI API header by StarkMP. It is third-party work under its own license, so it is not redistributed here; the README in that folder says where to get it. The DLL only compiles against it - nothing of it ships.
+The WebUI bridge compiles against the API headers of both backends it supports, and the two are handled differently for a licensing reason rather than a preference:
+
+- `extern/meridianui-api/` **is in the repository.** Meridian UI's API headers are plain MIT, which adds no restriction, so they are vendored here with their `LICENSE-MIT` alongside. Nothing to do.
+- `extern/prismaui-api/PrismaUI_API.h` **is not**, and has to be copied in by hand. The Prisma UI API header by StarkMP is under the Prisma UI License, which is proprietary and source-available and adds restrictions this GPL-3.0-only repository cannot carry. The README in that folder says where to get it.
+
+Neither backend has to be installed to build, and neither ships with the DLL - both are compile-time interfaces, detected at runtime.
 
 ```
 cmake --preset <preset>
