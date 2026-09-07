@@ -28,26 +28,90 @@ namespace Lodestone::Core::WebUIBridge
 	{
 		// --- State -------------------------------------------------------------
 
-		// The backend this build has, set once by Acquire().
+		// The backends this build has, in the order the choice walks them.
 		//
-		// ONE ENTRY, ON PURPOSE. Choosing between several present backends, and
-		// the Lodestone.ini key that overrides the choice, are a later
-		// deliverable of this phase; putting either here now would be untested
-		// policy sitting in front of a need. What this split buys is that adding
-		// the second entry does not reach any native below.
-		IWebUIBackend* g_backend = nullptr;
+		// MERIDIAN FIRST. The reasoning is not that it is better: it is under
+		// active maintenance, it needs no Media Keys Fix, and its focus is
+		// arbitrated rather than absent. Prisma has the installed base. The
+		// order is an opinion and the author may invert it; what it may not be
+		// is undefined, because then the answer would depend on load order.
+		constexpr std::array<IWebUIBackend* (*)(), 2> kBackendOrder = {
+			&WebUIBackends::MeridianUI,
+			&WebUIBackends::PrismaUI,
+		};
+
+		// The chosen backend, or null. Resolved once - see Resolve().
+		IWebUIBackend* g_active = nullptr;
+
+		// Whether Resolve() has run. Distinct from g_active being null, which is
+		// also the answer when it ran and found nothing.
+		bool g_resolved = false;
 
 		// The active backend, or null when none is usable.
 		//
-		// ASKED ON EVERY NATIVE RATHER THAN CACHED, and the cost is a pointer
-		// read plus one virtual call. Prisma UI settles presence inside Probe(),
-		// so for it this answer never changes - but a framework that answers a
-		// message handshake instead becomes available some messages after
-		// Acquire() has returned, and this is the line that would otherwise have
-		// to learn about it.
+		// ONE BACKEND PER SESSION, AND THE CHOICE NEVER CHANGES AFTER IT IS
+		// MADE. Two live backends would be the sum of two focus models, which is
+		// the one thing this design refuses. Re-asking the order on every call
+		// would do exactly that in slow motion: Prisma answers at kPostLoad and
+		// Meridian only at kInputLoaded, so "first available" would hand out
+		// Prisma early and Meridian later, in the same session, for the same
+		// consumer.
+		//
+		// Availability is still re-read, because a backend can go away - a
+		// shutdown callback drops Meridian's pointer - and a native must answer
+		// its sentinel then rather than call into a dead browser.
 		IWebUIBackend* Active()
 		{
-			return (g_backend && g_backend->IsAvailable()) ? g_backend : nullptr;
+			return (g_active && g_active->IsAvailable()) ? g_active : nullptr;
+		}
+
+		// Picks the backend for this session, once, and says so in one line.
+		//
+		// The line is the whole diagnostic surface of the choice: from outside
+		// the process, "no panel" looks the same whether nothing is installed,
+		// both are installed and one lost, or the bridge failed. It names the
+		// winner and, when there was a contest, the loser.
+		void Resolve()
+		{
+			if (g_resolved) {
+				return;
+			}
+			g_resolved = true;
+
+			std::string alsoPresent;
+
+			for (const auto& accessor : kBackendOrder) {
+				auto* backend = accessor();
+				if (!backend->IsAvailable()) {
+					continue;
+				}
+
+				if (!g_active) {
+					g_active = backend;
+					continue;
+				}
+
+				if (!alsoPresent.empty()) {
+					alsoPresent += ", ";
+				}
+				alsoPresent += backend->DisplayName();
+			}
+
+			if (!g_active) {
+				// Not an error. See the header: this is the common case, and a
+				// consumer asking WebUIAvailable() is expecting it.
+				spdlog::info("WebUIBridge: no web UI backend present - bridge inactive, "
+							 "natives return their sentinels.");
+				return;
+			}
+
+			if (alsoPresent.empty()) {
+				spdlog::info("WebUIBridge: {} found - bridge active.", g_active->DisplayName());
+			} else {
+				spdlog::info("WebUIBridge: {} found - bridge active. Also installed: {} - not used, "
+							 "because one backend per session is deliberate.",
+					g_active->DisplayName(), alsoPresent);
+			}
 		}
 
 		// Guards g_views and g_listeners. Both are reached from at least three
@@ -267,7 +331,7 @@ namespace Lodestone::Core::WebUIBridge
 				}
 
 				DispatchToGame([backend, viewId, viewPath]() {
-					const IWebUIBackend::ViewHandle handle = backend->CreateView(viewPath.c_str());
+					const IWebUIBackend::ViewHandle handle = backend->CreateView(viewId.c_str(), viewPath.c_str());
 
 					// True when the id was released while this create was queued
 					// - a destroy ran in between. The view has to be thrown
@@ -788,17 +852,38 @@ namespace Lodestone::Core::WebUIBridge
 
 	void Acquire()
 	{
-		g_backend = WebUIBackends::PrismaUI();
-		g_backend->Probe();
+		// Every backend gets its chance, and none is chosen here.
+		//
+		// PROBING IS NOT CHOOSING, and separating them is what the second
+		// backend forced. Prisma is settled when its Probe() returns; Meridian's
+		// only arms a handshake that finishes two SKSE messages later. Deciding
+		// at this seam would always pick Prisma, whatever the order said.
+		for (const auto& accessor : kBackendOrder) {
+			accessor()->Probe();
+		}
+	}
 
-		if (g_backend->IsAvailable()) {
-			spdlog::info("WebUIBridge: {} found - bridge active.", g_backend->DisplayName());
-		} else {
-			// Not an error. See the header: this is the common case, and a
-			// consumer asking WebUIAvailable() is expecting it.
-			spdlog::info("WebUIBridge: {} not present - bridge inactive, "
-						 "natives return their sentinels.",
-				g_backend->DisplayName());
+	void HandleSKSEMessage(SKSE::MessagingInterface::Message* a_msg)
+	{
+		if (!a_msg) {
+			return;
+		}
+
+		for (const auto& accessor : kBackendOrder) {
+			accessor()->HandleSKSEMessage(a_msg);
+		}
+
+		// kInputLoaded is where the choice is made, and it is the earliest seam
+		// where it can be honest: it is the message that completes Meridian's
+		// handshake, so it is the first moment at which every backend has
+		// finished answering.
+		//
+		// Papyrus cannot have asked anything yet - kDataLoaded is still to come
+		// - so no consumer can observe that the answer was null before this
+		// point. Which is why WebUIAvailable() answering False early is correct
+		// rather than a gap.
+		if (a_msg->type == SKSE::MessagingInterface::kInputLoaded) {
+			Resolve();
 		}
 	}
 

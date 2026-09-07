@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.19.0
+    VERSION 1.21.1
     LANGUAGES CXX
 )
 
@@ -107,6 +107,7 @@ add_commonlibsse_plugin(
         src/Core/Serialization.cpp
         src/Core/WebUIBridge.cpp
         src/Core/PrismaUIBackend.cpp
+        src/Core/MeridianUIBackend.cpp
         src/Core/EquipVeto.cpp
 )
 

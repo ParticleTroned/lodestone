@@ -79,6 +79,17 @@ namespace
 			Lodestone::Core::WebUIBridge::Acquire();
 		}
 
+		// EVERY message, and not a chosen few, because the bridge has more than
+		// one backend and they are acquired differently. Meridian UI answers a
+		// two-step SKSE handshake - a version request at kPostPostLoad, an API
+		// request at kInputLoaded - and only becomes available if it sees both.
+		// The bridge picks the session's backend at kInputLoaded, once.
+		//
+		// This is the only module in this plugin that needs those two seams, and
+		// filtering them here instead of inside the bridge would put knowledge
+		// of one vendor's handshake in the wrong file.
+		Lodestone::Core::WebUIBridge::HandleSKSEMessage(a_msg);
+
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();
 			Lodestone::Core::BookFramework::Install();

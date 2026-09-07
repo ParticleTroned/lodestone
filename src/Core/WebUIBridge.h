@@ -81,6 +81,22 @@ namespace Lodestone::Core::WebUIBridge
 	// expected outcome and leaves the module inactive.
 	void Acquire();
 
+	// Forwards one SKSE message to every backend, and picks the session's
+	// backend when the last of them has had its chance.
+	//
+	// CALL THIS FOR EVERY MESSAGE, not for a chosen few. One backend is
+	// acquired by a two-step SKSE handshake rather than by a direct request:
+	// Meridian UI asks for a version at kPostPostLoad and for its API at
+	// kInputLoaded, and it only ever becomes available if it sees both. Which
+	// seams a backend needs is the backend's business, so this hands over
+	// everything and lets each one filter.
+	//
+	// The choice of backend is made at kInputLoaded and never revisited - see
+	// Resolve() in the .cpp for why one per session is deliberate. Before that
+	// message, WebUIAvailable() answers False; no consumer can observe it,
+	// because Papyrus has not started by then.
+	void HandleSKSEMessage(SKSE::MessagingInterface::Message* a_msg);
+
 	// Registers this module's natives on the "Lodestone" script.
 	//
 	// 22 in total. The 13 of the current surface: WebUIAvailable,

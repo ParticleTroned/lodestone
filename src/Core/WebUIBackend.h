@@ -103,18 +103,29 @@ namespace Lodestone::Core
 		// info level, never at error level. A probe that logs a failure teaches
 		// users to report a non-problem.
 		//
-		// WHEN THIS RUNS IS THE BACKEND'S BUSINESS. Prisma UI answers a direct
-		// request at kPostLoad. Another framework may only answer later, through
-		// a message handshake, in which case Probe() arms the handshake and
-		// IsAvailable() stays false until it completes. The bridge asks for the
-		// answer whenever a native is called, never once at startup, so a
-		// backend that arrives late is supported without the bridge knowing it
-		// happened.
+		// WHEN THIS RUNS IS THE BACKEND'S BUSINESS, and the two backends here
+		// differ completely. Prisma UI answers a direct request and is settled
+		// when Probe() returns. Meridian UI answers a two-step SKSE handshake
+		// and is not available until kInputLoaded, so its Probe() only arms the
+		// handshake. That is why the bridge does not choose a backend here -
+		// see WebUIBridge.cpp, Resolve().
 		virtual void Probe() = 0;
+
+		// Every SKSE message, forwarded from plugin.cpp through the bridge.
+		//
+		// EXISTS BECAUSE ONE BACKEND IS ACQUIRED BY MESSAGE RATHER THAN BY
+		// REQUEST. Meridian's loader has to see kPostPostLoad to ask for a
+		// version and kInputLoaded to ask for the API; nothing else in this
+		// plugin needs those two seams. Prisma's implementation is empty, and
+		// that is the honest shape - a backend that needs no lifecycle sees
+		// none.
+		virtual void HandleSKSEMessage(SKSE::MessagingInterface::Message* a_msg) = 0;
 
 		// Whether this backend is present and usable right now.
 		//
-		// Read on every native call. Must be cheap and must not block.
+		// Read on every native call. Must be cheap and must not block. May go
+		// from false to true during load, which is exactly what the handshake
+		// backend does.
 		virtual bool IsAvailable() const = 0;
 
 		// --- Capability -------------------------------------------------------
@@ -136,11 +147,17 @@ namespace Lodestone::Core
 
 		// Builds a view from a path relative to this backend's view root.
 		//
+		// THE VIEW ID IS PASSED BECAUSE ONE BACKEND NEEDS IT AS A NAME. Meridian
+		// keys browsers by a unique string and returns the same browser for the
+		// same name; the consumer's own view id is exactly that string, and
+		// handing it over is what makes a repeated create idempotent on that
+		// side too. Prisma has no such concept and ignores it.
+		//
 		// Returns 0 on failure. The backend is responsible for arranging that
 		// WebUIBackendCallbacks::ViewReady fires for the returned handle once
 		// the page has finished loading - by registering the framework's own
-		// callback, or by whatever else that framework offers.
-		virtual ViewHandle CreateView(const char* a_viewPath) = 0;
+		// callback, or, where the framework offers none, by watching for it.
+		virtual ViewHandle CreateView(const char* a_viewId, const char* a_viewPath) = 0;
 
 		// Tears the view down and releases the handle.
 		virtual void DestroyView(ViewHandle a_view) = 0;
@@ -190,5 +207,6 @@ namespace Lodestone::Core
 	namespace WebUIBackends
 	{
 		IWebUIBackend* PrismaUI();
+		IWebUIBackend* MeridianUI();
 	}
 }

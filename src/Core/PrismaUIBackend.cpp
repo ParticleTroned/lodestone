@@ -114,6 +114,11 @@ namespace Lodestone::Core
 				g_api = PRISMA_UI_API::RequestPluginAPI<PRISMA_UI_API::IVPrismaUI1>();
 			}
 
+			// Nothing. Prisma is settled by Probe() and needs no seam of its
+			// own - see the interface, where this is the expected shape for a
+			// backend acquired by direct request rather than by handshake.
+			void HandleSKSEMessage(SKSE::MessagingInterface::Message*) override {}
+
 			bool IsAvailable() const override { return g_api != nullptr; }
 
 			bool HasCapability(const char* a_capability) const override
@@ -149,7 +154,9 @@ namespace Lodestone::Core
 				return false;
 			}
 
-			ViewHandle CreateView(const char* a_viewPath) override
+			// The view id is unused here: Prisma names nothing and hands back an
+			// opaque handle. It is in the signature for Meridian's sake.
+			ViewHandle CreateView(const char*, const char* a_viewPath) override
 			{
 				return g_api ? static_cast<ViewHandle>(g_api->CreateView(a_viewPath, &OnDomReady)) : 0;
 			}
