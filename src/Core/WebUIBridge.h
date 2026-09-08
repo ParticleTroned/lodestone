@@ -5,12 +5,18 @@
 // Papyrus access to a web UI backend, which has no Papyrus surface of its own.
 //
 // THE MODULE IS NAMED FOR WHAT IT DOES, NOT FOR WHO SUPPLIES IT, and that is
-// what this file was renamed from PrismaBridge to say. The backend supported
-// today is Prisma UI, and the vendor name below is factually correct about it -
-// it is not left over. When a second backend arrives, the body of the .cpp
-// becomes PrismaUIBackend.cpp, where the name is still correct, and this file
-// keeps only the parts that are true of any backend. That split is designed and
-// is not built - see the phase document.
+// what this file was renamed from PrismaBridge to say. The rename happened in
+// 1.18.0, while Prisma UI was still the only backend, on the argument that a
+// contract naming its supplier cannot outlive it.
+//
+// THAT ARGUMENT WAS A PROMISE UNTIL 1.21.0 PAID IT. Meridian UI arrived as a
+// second backend and no consumer had to change a line - a .pex built against
+// 1.17.x, calling the Prisma* names, reached a backend that is not Prisma
+// without being recompiled. The split the promise depended on is BUILT:
+// WebUIBackend.h is the seam, PrismaUIBackend.cpp and MeridianUIBackend.cpp are
+// the two sides of it, and this file keeps only what is true of any backend.
+//
+// ONE BACKEND IS CHOSEN PER SESSION, at kInputLoaded, and never revisited.
 //
 // WHY THIS EXISTS. Prisma UI ships a vtable and nothing else: no .psc, no .pex,
 // no .esp, and no native registered on its DLL - measured by listing the
@@ -29,19 +35,22 @@
 // requires is adopted anyway, because it is right here for the same reason it
 // is right there - see the next paragraph.
 //
-// INACTIVE IS NOT BROKEN, AND THE LOG SAYS WHICH. With Prisma UI absent every
+// INACTIVE IS NOT BROKEN, AND THE LOG SAYS WHICH. With no backend present every
 // native returns its sentinel and nothing is written at error level:
-// PrismaAvailable() is a probe, and a probe that logs a failure teaches users to
-// report a non-problem. The one line written at load says which of the two
-// states this module is in, because from the outside they are indistinguishable
+// WebUIAvailable() is a probe, and a probe that logs a failure teaches users to
+// report a non-problem. That is the COMMON case, not the exceptional one - most
+// load orders have neither backend installed. The one line written at load says
+// which state this module is in and, when there was a contest, which backend won
+// and which it passed over; from the outside those states are indistinguishable
 // and unanswerable in a support thread.
 //
-// NOTHING IN LODESTONE CONSUMES THIS. The dependency points one way on purpose.
-// Prisma UI's last public activity was 2026-03-27 and a defect report from a
-// sibling project of this tree has gone unanswered since 2026-08-11; a framework
-// that might stop moving may be exposed, never depended on. If Prisma UI
-// disappears, every consumer of this module degrades to "no panel" and no other
-// part of Lodestone notices.
+// NOTHING IN LODESTONE CONSUMES THIS. The dependency points one way on purpose,
+// and NEITHER backend is required: a framework that might stop moving may be
+// exposed, never depended on. Prisma UI is the case that set the rule - its last
+// public activity was 2026-03-27, and a defect report from a sibling project of
+// this tree has gone unanswered since 2026-08-11. If every backend disappears,
+// consumers of this module degrade to "no panel" and no other part of Lodestone
+// notices.
 //
 // THERE IS A FOCUS SURFACE SINCE 1.22.0, AND IT ANSWERS DIFFERENTLY PER
 // BACKEND. WebUIFocusView, WebUIClearFocus and WebUIIsViewFocused let one view
@@ -69,20 +78,28 @@
 
 namespace Lodestone::Core::WebUIBridge
 {
-	// Acquires the Prisma UI API pointer. Call once, on kPostLoad.
+	// Gives every backend its chance to find its framework. Call once, on
+	// kPostLoad.
+	//
+	// PROBING IS NOT CHOOSING, and separating them is what the second backend
+	// forced. Prisma UI is settled when its Probe() returns; Meridian UI's only
+	// arms a two-step SKSE handshake that finishes at kInputLoaded. Deciding here
+	// would always pick Prisma, whatever the order said - so the choice is made
+	// in HandleSKSEMessage below, not here.
 	//
 	// kPostLoad is what the Prisma header itself recommends for the request, and
-	// it is also the latest point that is still early enough: the pointer has to
-	// exist before the first Papyrus call arrives.
+	// it is also the latest point that is still early enough for a backend that
+	// answers immediately: the pointer has to exist before the first Papyrus call
+	// arrives.
 	//
 	// NO VIEW IS CREATED HERE, and that is the trap this module was written
-	// around. At kPostLoad the D3D device and the Ultralight renderer do not
-	// exist yet, and CreateView at that moment queues forever or blocks the load
-	// chain - established from the Add Item Menu's own source and paid for again
-	// by a sibling project of this tree. Views are created only when a consumer
-	// asks, which is necessarily later.
+	// around. At kPostLoad the D3D device and the renderer do not exist yet, and
+	// CreateView at that moment queues forever or blocks the load chain -
+	// established from the Add Item Menu's own source and paid for again by a
+	// sibling project of this tree. Views are created only when a consumer asks,
+	// which is necessarily later.
 	//
-	// Cannot fail in a way a caller can act on: Prisma UI absent is a normal,
+	// Cannot fail in a way a caller can act on: no backend installed is a normal,
 	// expected outcome and leaves the module inactive.
 	void Acquire();
 
