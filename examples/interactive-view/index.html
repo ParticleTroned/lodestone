@@ -14,10 +14,20 @@
   choice:
 
     Prisma UI      Data\PrismaUI\views\<YourModName>\
-    Meridian UI    Data\MeridianUI\Lodestone\<YourModName>\
+    Meridian UI    Data\MeridianUI\<YourModName>\
 
   The same bytes work on both. The path you pass to WebUICreateView does not
   change; only where it is rooted does.
+
+  THE TWO ROOTS ARE NOT SYMMETRIC, and copying one shape onto the other breaks
+  things. Prisma UI shares its root between every consumer. Meridian UI gives
+  each mod its own top-level folder and enforces it: the folder name IS the URL
+  host, and its traversal guard refuses a file that does not resolve inside that
+  host's own real folder. Two mods under one shared host cannot both work there.
+
+  The Meridian root lost an intermediate Lodestone\ level in DLL 1.23.0. If you
+  are reading an older copy of this file, move your folder up one and gate on
+  Lodestone.GetVersion() >= 1023000.
 
   THE THING THIS EXAMPLE IS ACTUALLY ABOUT: INPUT IS NOT GUARANTEED.
 

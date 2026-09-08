@@ -862,6 +862,12 @@ Int Function GetEquipBlockCount() global native
 ;   6. poll WebUIIsViewFocused(id)  - True when the view really has it
 ;
 ; Gate on GetVersion() >= 1018000 for the surface, and >= 1022000 for focus.
+;
+; AND >= 1023000 IF YOU SHIP FOR MERIDIAN UI, because 1.23.0 moved that root:
+; Data\MeridianUI\<asViewPath>, not Data\MeridianUI\Lodestone\<asViewPath>. See
+; WebUICreateView. A page installed under the old root is not found, and the
+; framework cannot tell you so - it reports the error page as a page that
+; loaded. Gate, and move the folder.
 
 ; Whether a web UI backend is present and answered.
 ;
@@ -873,24 +879,46 @@ Bool Function WebUIAvailable() global native
 ; pick, scoped to your mod by you (nothing namespaces it for you; prefer your
 ; mod's name).
 ;
-; asViewPath is relative to the active backend's view root. "MyMod/index.html"
-; loads index.html inside your MyMod view folder.
+; asViewPath is relative to the active backend's view root. It must be at least
+; a folder and a file - "MyMod/index.html" - because the first folder names YOU.
+;
+; NAME THE FILE. There is no directory index and no default document on the
+; Meridian side: "MyMod/" does not serve index.html, it serves a 404.
 ;
 ; PACKAGING, AND THIS PART IS SPECIFIC TO THE BACKEND YOU ARE RUNNING RATHER THAN
 ; PART OF THIS CONTRACT. The path you pass does not change; where it is rooted
 ; does:
 ;
 ;   Prisma UI      Data\PrismaUI\views\<asViewPath>
-;   Meridian UI    Data\MeridianUI\Lodestone\<asViewPath>
+;   Meridian UI    Data\MeridianUI\<asViewPath>
 ;
 ; So "MyMod/index.html" reads Data\PrismaUI\views\MyMod\index.html under one and
-; Data\MeridianUI\Lodestone\MyMod\index.html under the other.
+; Data\MeridianUI\MyMod\index.html under the other.
 ;
 ; SHIP YOUR PAGE TO BOTH ROOTS if you want to work with either backend, and that
 ; is the same folder copied twice, not two pages: the same file was measured
-; working unmodified on both. The Meridian root is shared by every consumer of
-; this bridge, which is why your own folder name sits inside it - it is what
-; keeps two mods apart there.
+; working unmodified on both.
+;
+; THE MERIDIAN ROOT CHANGED IN 1.23.0, AND IT IS A HARD BREAK. It used to be
+; Data\MeridianUI\Lodestone\<asViewPath> - one host owned by this framework, with
+; every consumer nested inside it. That layout cannot work: with two mods both
+; shipping Data\MeridianUI\Lodestone\, only ONE is visible and which one depends
+; on your mod order. Measured in game, three times, with the roles swapping when
+; the order was inverted.
+;
+; It is not a defect in Meridian UI. That framework serves each mod from its own
+; folder on purpose - Data\MeridianUI\<YourModName>\, with the folder name as the
+; URL host - and its traversal guard refuses a file that does not resolve inside
+; the host's own real folder. Two mods sharing one host is outside that model.
+;
+; So if you shipped to the old root, MOVE YOUR FOLDER UP ONE LEVEL. There is no
+; fallback and there cannot be one: a missing page on that backend produces an
+; error page that loads successfully, so the framework cannot tell "wrong root"
+; from "working" and cannot retry the other one.
+;
+; THE TWO ROOTS ARE NO LONGER SYMMETRIC, AND THAT IS CORRECT. Prisma UI keeps its
+; shared Data\PrismaUI\views\ root, where four consumers coexist today, because
+; it has no such guard. Do not "fix" one to look like the other.
 ;
 ; Returns True when the request was accepted - NOT when the panel is on screen.
 ; Wait for LodestoneWebUIViewReady, or poll WebUIIsViewReady, before calling
@@ -898,7 +926,10 @@ Bool Function WebUIAvailable() global native
 ;
 ; Idempotent: calling it again with the same id returns True and creates nothing.
 ;
-; Returns False if no backend is present, or if either argument is empty.
+; Returns False if no backend is present, if either argument is empty, if
+; asViewPath names no folder before the file, or - on Meridian UI - if that first
+; folder is not usable as a URL host. All four write a line naming the reason;
+; none of them fails quietly.
 Bool Function WebUICreateView(String asViewId, String asViewPath) global native
 
 ; Whether the view exists and its page has finished loading.

@@ -47,19 +47,38 @@ namespace Lodestone::Core
 {
 	namespace
 	{
-		// The mod:// host every view of this bridge is served from, and the
-		// folder a consumer installs its page into.
+		// The scheme every view of this bridge is served over. The HOST comes
+		// from the consumer - see BuildViewUrl below.
 		//
-		// ONE HOST FOR THE WHOLE BRIDGE, not one per consumer, because a Papyrus
-		// consumer has no name Meridian knows and should not have to acquire
-		// one. Consumers stay apart the same way they already do under Prisma:
-		// by the folder their own asViewPath names.
+		// IT WAS "mod://Lodestone/" UNTIL 1.23.0, ONE HOST FOR THE WHOLE BRIDGE,
+		// AND THAT WAS WRONG. The reasoning was that a Papyrus consumer has no
+		// name Meridian knows, so the framework would own the host and consumers
+		// would stay apart by the folder their own asViewPath names. It produced
+		// this, in the field:
 		//
-		// Release browsers are pinned to a single mod:// host, so one host for
-		// every view of this bridge satisfies that by construction rather than
-		// by luck - and it keeps satisfying it however many views exist, which
-		// a host-per-consumer scheme would not.
-		constexpr const char* kUrlPrefix = "mod://Lodestone/";
+		//   Data\MeridianUI\Lodestone\IntelligenceMatters\   from one mod
+		//   Data\MeridianUI\Lodestone\StrengthMatters\       from another
+		//
+		// Two mods, one directory. Under MO2 exactly ONE of them is visible and
+		// which one depends on mod order - measured in game on 2026-09-08, three
+		// times, with the roles swapping when the order was inverted.
+		//
+		// THE CAUSE IS THE VENDOR'S OWN TRAVERSAL GUARD, not a bug and not the
+		// VFS. Section 4 of MeridianUI-AuthorGuide.md: the filesystem layer
+		// "canonicalizes both your mod root and the resolved file through the OS
+		// and refuses anything that does not land inside the root". The host root
+		// canonicalizes to ONE real folder; the other mod's file, reachable
+		// through the VFS, canonicalizes under a different real folder, lands
+		// outside, and is refused. Prisma has no such guard, which is why four
+		// consumers share Data\PrismaUI\views\ without trouble - that asymmetry
+		// is real and is stated in Lodestone.psc.
+		//
+		// The same section states the layout that was never ours to redefine:
+		// "Ship your UI assets under a folder named for your mod",
+		// Data\MeridianUI\<YourModName>\, and "the host component is your mod
+		// folder name". One level. A framework-owned host with consumers nested
+		// under it is not a layout that guide ever described.
+		constexpr const char* kUrlScheme = "mod://";
 
 		// The JS object a page's inbound bindings hang off: Lodestone.<fn>(...).
 		//
@@ -219,6 +238,120 @@ namespace Lodestone::Core
 				}
 			}
 			return nullptr;
+		}
+
+		// --- Building the view URL ----------------------------------------------
+
+		// Splits a consumer's view path into the mod:// host and the rest.
+		//
+		// THE FIRST SEGMENT BECOMES THE HOST, and it is not an arbitrary pick
+		// between two equally good options. The alternative was a_viewId, which
+		// this backend already receives and already hands over as the browser
+		// name - and measuring the consumers of the day settled it:
+		//
+		//   viewId "IntelligenceMatters"            path "IntelligenceMatters/index.html"
+		//   viewId "IntelligenceMattersMeditation"  path "IntelligenceMatters/meditation.html"
+		//   viewId "IntelligenceMattersResearch"    path "IntelligenceMatters/research.html"
+		//   viewId "StrengthMatters"                path "StrengthMatters/index.html"
+		//
+		// TWO OF THE FOUR DIVERGE, and they diverge for a good reason: a view id
+		// has to be UNIQUE PER VIEW - it keys the coordinator's table - while a
+		// host has to be SHARED PER MOD. They are different things, and that
+		// consumer had already treated them as different. Using the id as host
+		// would have given one mod three separate host folders, which is the
+		// opposite of what the guide asks for.
+		//
+		// Returns false when the path has no separator, which means the consumer
+		// named a file at the root with no mod folder around it. The caller
+		// reports that; it is not something to paper over, because the guide has
+		// no default host any more than it has a default document.
+		bool SplitViewPath(const char* a_viewPath, std::string& a_host, std::string& a_rest)
+		{
+			if (!a_viewPath || !*a_viewPath) {
+				return false;
+			}
+
+			const std::string_view path(a_viewPath);
+
+			// Backslashes are normalized first, exactly as the scheme handler
+			// does, so a consumer that wrote a Windows-style path gets the same
+			// answer here as it would get there.
+			std::size_t split = path.find_first_of("/\\");
+			if (split == std::string_view::npos || split == 0 || split + 1 >= path.size()) {
+				return false;
+			}
+
+			a_host.assign(path.substr(0, split));
+			a_rest.assign(path.substr(split + 1));
+
+			for (auto& c : a_rest) {
+				if (c == '\\') {
+					c = '/';
+				}
+			}
+
+			return true;
+		}
+
+		// Whether a string may be used as a mod:// host.
+		//
+		// THIS CHECK IS NEW IN 1.23.0 AND IT IS NOT DEFENSIVE HABIT. Until then
+		// the host was a constant of this plugin; now it is derived from a string
+		// a consumer wrote, and the vendor's guard rejects a whole family of
+		// them - section 4 lists an empty host, a host containing a separator,
+		// and one ending in a dot or a space, which Windows silently strips at
+		// open time.
+		//
+		// WHAT MAKES IT WORTH THE CODE IS THE FAILURE MODE, NOT THE ODDS. An
+		// invalid host produces a 404, and a 404 in this backend is HTML that
+		// loads: IsPageLoaded() answers true and the bridge announces the view as
+		// ready, exactly as it would for a page that worked. So the alternative
+		// to failing loudly here is not "a clear error later" - it is a panel
+		// that never appears and a framework that says it did.
+		//
+		// The characters below are the vendor's list, not a guess at it. What is
+		// NOT checked is percent-escaping: a consumer's view path is a folder
+		// name, not a URL, so it cannot arrive pre-escaped, and rejecting '%'
+		// outright would refuse a legal folder name.
+		bool IsValidModHost(std::string_view a_host, const char*& a_reason)
+		{
+			if (a_host.empty()) {
+				a_reason = "it is empty";
+				return false;
+			}
+
+			if (a_host.find_first_of("/\\") != std::string_view::npos) {
+				a_reason = "it contains a path separator";
+				return false;
+			}
+
+			if (a_host.find(':') != std::string_view::npos) {
+				a_reason = "it contains a colon";
+				return false;
+			}
+
+			// Windows drops a trailing dot or space when opening, so the string
+			// layer refuses them rather than let the two layers disagree.
+			const char last = a_host.back();
+			if (last == '.' || last == ' ') {
+				a_reason = "it ends in a dot or a space";
+				return false;
+			}
+
+			if (a_host == "." || a_host == "..") {
+				a_reason = "it is a relative path segment";
+				return false;
+			}
+
+			for (const unsigned char c : a_host) {
+				if (c < 0x20 || c == 0x7F) {
+					a_reason = "it contains a control character";
+					return false;
+				}
+			}
+
+			a_reason = nullptr;
+			return true;
 		}
 
 		// --- Turning a Papyrus payload into JavaScript --------------------------
@@ -712,7 +845,9 @@ namespace Lodestone::Core
 		public:
 			const char* Name() const override { return "MeridianUI"; }
 			const char* DisplayName() const override { return "Meridian UI"; }
-			const char* ViewRootHint() const override { return "Data\\MeridianUI\\Lodestone for Meridian UI"; }
+			// The root a consumer installs into, phrased to drop into an error
+			// message. It lost the Lodestone level in 1.23.0 - see kUrlScheme.
+			const char* ViewRootHint() const override { return "Data\\MeridianUI for Meridian UI"; }
 
 			// Arms the handshake and nothing else.
 			//
@@ -839,23 +974,47 @@ namespace Lodestone::Core
 					return 0;
 				}
 
-				// THE VIEW PATH IS USED AS GIVEN, and the view id does NOT enter
-				// the URL. It is the browser's unique name and nothing else.
+				// THE FIRST SEGMENT OF THE VIEW PATH BECOMES THE HOST, and the
+				// view id does NOT enter the URL. It is the browser's unique
+				// name and nothing else.
 				//
-				// This is what makes one page work on both backends: the same
-				// asViewPath resolves under each backend's own root, so a
-				// consumer ships the identical folder to two places and passes
-				// the identical string.
+				// The consumer still passes ONE string and it is the same string
+				// on both backends - what changed in 1.23.0 is where each
+				// backend roots it:
 				//
 				//   Prisma UI    Data\PrismaUI\views\<asViewPath>
-				//   Meridian UI  Data\MeridianUI\Lodestone\<asViewPath>
+				//   Meridian UI  Data\MeridianUI\<asViewPath>
 				//
-				// Putting the id in the path as well would double the
-				// consumer's own folder - the Strength Matters view id is
-				// "StrengthMatters" and its path is "StrengthMatters/index.html"
-				// - and would silently break every path that already works.
-				std::string url = kUrlPrefix;
-				url += a_viewPath;
+				// So "IntelligenceMatters/index.html" becomes
+				// mod://IntelligenceMatters/index.html here and
+				// Data\PrismaUI\views\IntelligenceMatters\index.html there. The
+				// consumer's folder moves up one level under Meridian and does
+				// not move at all under Prisma.
+				std::string host;
+				std::string rest;
+				if (!SplitViewPath(a_viewPath, host, rest)) {
+					spdlog::error("MeridianUIBackend: view path '{}' has no mod folder in it. Meridian "
+								  "serves a page from Data\\MeridianUI\\<YourMod>\\<file>, so the path "
+								  "needs at least one folder before the file.",
+						a_viewPath);
+					return 0;
+				}
+
+				const char* reason = nullptr;
+				if (!IsValidModHost(host, reason)) {
+					// LOUD ON PURPOSE. See IsValidModHost: the alternative is a
+					// 404 that this backend reports as a page that loaded.
+					spdlog::error("MeridianUIBackend: '{}' cannot be a mod:// host because {}. The first "
+								  "folder of a view path is the host, and Meridian's own guard rejects "
+								  "this one - the view was not created.",
+						host, reason);
+					return 0;
+				}
+
+				std::string url = kUrlScheme;
+				url += host;
+				url += '/';
+				url += rest;
 
 				Meridian::CEF::IBrowser* browser = nullptr;
 
