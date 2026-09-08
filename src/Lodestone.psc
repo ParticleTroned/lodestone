@@ -808,8 +808,15 @@ Int Function GetEquipBlockCount() global native
 ; made once at load and the log line says which won.
 ;
 ; If you need Meridian UI specifically, gate on GetVersion() >= 1021000. If any
-; backend will do - which is the point of this surface - gate on 1017000 and ask
+; backend will do - which is the point of this surface - gate on 1018000 and ask
 ; WebUIAvailable.
+;
+; THAT SAID 1017000 UNTIL 1.23.1, AND IT WAS WRONG IN A WAY THAT WOULD HAVE BITTEN.
+; 1017000 is the floor of the OLD Prisma* names; this paragraph is about the
+; WebUI* ones, which arrived in 1.18.0. A consumer that followed it would gate on
+; a version where the very function named on the next line - WebUIAvailable - does
+; not exist, and calling a missing native is a Papyrus error it cannot suppress.
+; The number survived the 1.18.0 rename inside a paragraph that had moved on.
 ;
 ; THIS SURFACE WAS RENAMED IN 1.18.0. The 1.17.x names still answer and are
 ; listed at the end of this section, each pointing at its replacement. They are
@@ -1118,6 +1125,28 @@ Int Function WebUIGetListenerSlotsFree() global native
 ;
 ; Call it AFTER WebUIShow. A hidden view is refused, because focus on something
 ; the player cannot see is the exact state the panic chord exists to undo.
+;
+; AND DO NOT TRUST "READY" AS PROOF THAT YOUR PAGE LOADED. This is the one place
+; where that distinction can hurt the player rather than you.
+;
+; A missing or misnamed page does not fail on the Meridian backend: it produces
+; an error page, and an error page is HTML that loads successfully. So the view
+; reports ready, LodestoneWebUIViewReady fires, WebUIGetViewState answers 2, and
+; a JS listener registers - all exactly as they would for the page you meant. The
+; bridge cannot tell the two apart and does not pretend to.
+;
+; Give that view focus and the player is holding a browser error page with no
+; button on it. Measured: a consumer did exactly this, and the only way out was
+; killing the game.
+;
+; THE FIX IS ON YOUR SIDE AND IT IS SMALL: have the PAGE tell you it is alive.
+; Register a listener, call it from your page after it has drawn, and only then
+; call WebUIShow and WebUIFocusView. A page that did not load cannot send it, and
+; that is the only signal that distinguishes the two. The interactive example
+; shipped with this framework does it with LodestoneExampleReady.
+;
+; The panic chord still saves the player if you skip this - Ctrl+Backspace, and
+; no mod can disable it. Do not make them use it.
 Bool Function WebUIFocusView(String asViewId) global native
 
 ; Gives the mouse and keyboard back to the game.

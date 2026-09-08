@@ -55,12 +55,27 @@
     3. wait for LodestoneWebUIViewReady       - or poll WebUIIsViewReady(id)
     4. WebUIRegisterListener(id, jsName, ev)  - each name the page sends on
     5. WebUICall(id, "LodestoneExampleUpdate", json)
-    6. WebUIShow(id)
-    7. WebUIFocusView(id)                     - ONLY if "view-focus" is True
-    8. poll WebUIIsViewFocused(id)            - and tell the page, step 9
-    9. WebUICall(id, "LodestoneExampleFocus", "{\"focused\":true}")
+    6. WAIT FOR LodestoneExampleReady         - the page's own signal, step 6a
+    7. WebUIShow(id)
+    8. WebUIFocusView(id)                     - ONLY if "view-focus" is True
+    9. poll WebUIIsViewFocused(id)            - and tell the page, step 10
+   10. WebUICall(id, "LodestoneExampleFocus", "{\"focused\":true}")
 
-  Step 9 is what lights the controls up. The page cannot find out on its own:
+  STEP 6 IS NOT CEREMONY, AND SKIPPING IT IS WHAT COSTS A PLAYER THE GAME. The
+  bridge's "ready" in step 3 does NOT mean your page loaded. A missing or
+  misnamed page produces an error page on the Meridian backend, an error page is
+  HTML that loads, and every signal above fires for it exactly as it would for
+  the page you meant - ready, the mod event, state 2, listeners registered.
+
+  So the ONLY thing that distinguishes "my page is up" from "a browser error page
+  is up" is your page saying so. This file sends LodestoneExampleReady at the
+  bottom of its script, after the DOM exists. Register a listener for it in step
+  4 and gate steps 7 and 8 on it.
+
+  Give focus to an error page and the player is holding a browser 404 with no
+  button on it. That happened, and the only way out was killing the game.
+
+  Step 10 is what lights the controls up. The page cannot find out on its own:
   a web page has no way to ask the game whether the game is routing input to it.
 
   FOCUS GOES AWAY WITHOUT YOU ASKING, AND YOUR PAGE HAS TO SURVIVE IT. Lodestone

@@ -214,7 +214,34 @@ namespace Lodestone::Core::WebUIBridge
 			// the game thread, which is a deadlock waiting for a bad day. The
 			// mirror is exact for every transition this module made, and this
 			// module is the only thing that can move a view it created.
-			bool hidden = false;
+			//
+			// IT STARTS HIDDEN, AND IT DEFAULTED TO VISIBLE UNTIL 1.23.1. That
+			// default was a straight lie for the window between CreateView and
+			// the consumer's first Show: the backend hides a view at creation -
+			// MeridianUIBackend calls SetBrowserVisible(false) and says so in the
+			// log - while this field claimed it was on screen. So
+			// WebUIIsViewVisible answered True and WebUIGetViewState answered 2,
+			// "ready and visible", for a panel nobody had shown yet.
+			//
+			// The symptom a consumer saw was the other end of it: state 1,
+			// "ready, hidden", was unreachable. A script waiting for 1 before
+			// calling Show waited forever, because the view went from 0 straight
+			// to 2.
+			//
+			// Nobody wrote a wrong transition; the initial value was wrong and
+			// every transition after it was right, which is why Show and Hide
+			// always behaved and only the first window lied.
+			//
+			// MEASURED ON ONE BACKEND, CONTRACTUAL ON THE OTHER, and the
+			// difference is worth knowing before someone "corrects" this back.
+			// Meridian is measured: it hides at creation and logs that it did.
+			// PrismaUIBackend::CreateView hides nothing, and whether Prisma
+			// shows a view the moment it exists was never measured here. True is
+			// what Lodestone.psc promises for both - "a view becomes visible when
+			// WebUIShow is called, not when it is built" - so if Prisma turns out
+			// to create a visible view, the defect is that divergence, not this
+			// field, and it gets fixed in the backend that has it.
+			bool hidden = true;
 
 			// Whether this view holds the game's mouse and keyboard.
 			//
