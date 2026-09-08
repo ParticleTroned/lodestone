@@ -55,25 +55,28 @@
     3. wait for LodestoneWebUIViewReady       - or poll WebUIIsViewReady(id)
     4. WebUIRegisterListener(id, jsName, ev)  - each name the page sends on
     5. WebUICall(id, "LodestoneExampleUpdate", json)
-    6. WAIT FOR LodestoneExampleReady         - the page's own signal, step 6a
-    7. WebUIShow(id)
+    6. WebUIShow(id)                          - unconditionally, see below
+    7. WAIT FOR LodestoneExampleReady         - this page sends it after drawing
     8. WebUIFocusView(id)                     - ONLY if "view-focus" is True
     9. poll WebUIIsViewFocused(id)            - and tell the page, step 10
    10. WebUICall(id, "LodestoneExampleFocus", "{\"focused\":true}")
 
-  STEP 6 IS NOT CEREMONY, AND SKIPPING IT IS WHAT COSTS A PLAYER THE GAME. The
-  bridge's "ready" in step 3 does NOT mean your page loaded. A missing or
-  misnamed page produces an error page on the Meridian backend, an error page is
-  HTML that loads, and every signal above fires for it exactly as it would for
-  the page you meant - ready, the mod event, state 2, listeners registered.
+  STEPS 6 AND 7 ARE IN THAT ORDER AND SWAPPING THEM DEADLOCKS. A hidden view does
+  not run its page. Gate the Show on step 7 and showing waits for the
+  announcement, the announcement waits for the page to run, and the page waits to
+  be shown - forever, with no error and no log line. WebUICreateView returned
+  True, the view reported ready, the listeners registered, and the panel never
+  appears. A consumer lost two rounds of in-game testing to exactly this.
 
-  So the ONLY thing that distinguishes "my page is up" from "a browser error page
-  is up" is your page saying so. This file sends LodestoneExampleReady at the
-  bottom of its script, after the DOM exists. Register a listener for it in step
-  4 and gate steps 7 and 8 on it.
+  STEP 7 STILL MATTERS, AND IT GUARDS THE FOCUS RATHER THAN THE SHOW. The
+  bridge's "ready" in step 3 does not mean your page is up: a missing or misnamed
+  page produces an error page, an error page is HTML that loads, and every signal
+  above fires for it exactly as it would for the page you meant. The only thing
+  that tells the two apart is your page saying so, which an error page cannot do.
 
-  Give focus to an error page and the player is holding a browser 404 with no
-  button on it. That happened, and the only way out was killing the game.
+  So: showing is safe, focusing is not. An error page on screen is ugly and the
+  player closes your panel. An error page WITH FOCUS is a browser 404 with no
+  button on it - that happened, and the only way out was killing the game.
 
   Step 10 is what lights the controls up. The page cannot find out on its own:
   a web page has no way to ask the game whether the game is routing input to it.

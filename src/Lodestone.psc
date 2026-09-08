@@ -862,11 +862,19 @@ Int Function GetEquipBlockCount() global native
 ;   3. wait for the mod event LodestoneWebUIViewReady (strArg = your view id),
 ;      or poll WebUIIsViewReady(id)
 ;   4. WebUICall(...)               - only now is it delivered
+;   5. WebUIShow(id)                - and do NOT gate this on anything your page
+;                                     sends: a hidden view does not run its page
 ;
-; And if the panel takes input, two more steps that only work on a backend that
+; And if the panel takes input, three more steps that only work on a backend that
 ; answers True to "view-focus":
-;   5. WebUIFocusView(id)           - after WebUIShow, and only then
-;   6. poll WebUIIsViewFocused(id)  - True when the view really has it
+;   6. wait for a signal YOUR PAGE sends after it has drawn - the only proof it
+;      is your page on screen and not an error page. It cannot arrive before 5
+;   7. WebUIFocusView(id)           - only now
+;   8. poll WebUIIsViewFocused(id)  - True when the view really has it
+;
+; STEPS 5 AND 6 ARE IN THAT ORDER FOR A REASON, and swapping them deadlocks:
+; showing would wait for the announcement, the announcement waits for the page to
+; run, and the page waits to be shown. Nothing errors and nothing logs.
 ;
 ; Gate on GetVersion() >= 1018000 for the surface, and >= 1022000 for focus.
 ;
@@ -940,6 +948,13 @@ Bool Function WebUIAvailable() global native
 Bool Function WebUICreateView(String asViewId, String asViewPath) global native
 
 ; Whether the view exists and its page has finished loading.
+;
+; IT SAYS THE PAGE LOADED, NOT THAT IT RAN, and the difference has cost in-game
+; rounds. This answers True with the view still HIDDEN - and a hidden view does
+; not execute its page, so nothing your page would send has been sent yet. It
+; also answers True for a browser error page, because an error page loads like
+; any other. Use it to know WebUICall will be delivered; do not read it as "my
+; page is up and working".
 ;
 ; Returns False for an unknown id, which is deliberately the same answer as "not
 ; ready yet" - both mean WebUICall would do nothing. WebUIGetViewState is what
@@ -1140,10 +1155,30 @@ Int Function WebUIGetListenerSlotsFree() global native
 ; killing the game.
 ;
 ; THE FIX IS ON YOUR SIDE AND IT IS SMALL: have the PAGE tell you it is alive.
-; Register a listener, call it from your page after it has drawn, and only then
-; call WebUIShow and WebUIFocusView. A page that did not load cannot send it, and
-; that is the only signal that distinguishes the two. The interactive example
-; shipped with this framework does it with LodestoneExampleReady.
+; Register a listener, call it from your page after it has drawn, and gate FOCUS
+; on it. A page that did not load cannot send it, and that is the only signal
+; that distinguishes the two. The interactive example shipped with this framework
+; does it with LodestoneExampleReady.
+;
+; SHOW FIRST, THEN WAIT, THEN FOCUS - AND THE ORDER IS NOT INTERCHANGEABLE:
+;
+;   WebUIShow(id)                  always, without waiting for anything
+;   wait for your page's signal    it cannot arrive before the Show
+;   WebUIFocusView(id)             only now
+;
+; BECAUSE A HIDDEN VIEW DOES NOT RUN ITS PAGE. Gate the Show on the page's signal
+; and you have built a deadlock: showing waits for the announcement, the
+; announcement waits for the page to run, and the page waits to be shown. It
+; produces no error and no log line - WebUICreateView returned True, the view
+; reported ready, your listeners registered - and the panel simply never appears.
+; Measured by a consumer, who lost two rounds of in-game testing to it.
+;
+; AND THAT IS WHY "READY" IS NOT ENOUGH ON ITS OWN: WebUIIsViewReady answers True
+; with the view still hidden. It says the page LOADED, not that it RAN.
+;
+; Showing is safe; focusing is what is not. An error page on screen is ugly and
+; recoverable - the player closes your panel. An error page WITH FOCUS is the one
+; that traps them.
 ;
 ; The panic chord still saves the player if you skip this - Ctrl+Backspace, and
 ; no mod can disable it. Do not make them use it.
