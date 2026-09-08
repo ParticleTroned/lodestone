@@ -135,7 +135,40 @@ namespace Lodestone::Core
 				// and Unfocus per view, but its focus menu is a single kModal
 				// with no stack: unfocusing one closes it for all of them. The
 				// capability exists; the stacking does not. See WebUIBridge.h.
+				//
+				// IT STAYS false, AND 1.22.0 IS EXACTLY WHEN SOMEBODY WILL TRY
+				// TO "FIX" IT. That version added "view-focus" below, so this
+				// line now sits next to a focus capability that answers
+				// differently, and the two look like they disagree. They do not.
+				// They are different questions - see the trap written out under
+				// "view-focus" - and this one has the same answer on both
+				// backends for two different reasons.
 				if (capability == "focus-stack") {
+					return false;
+				}
+
+				// "view-focus": can ONE view be given the mouse and keyboard.
+				//
+				// THIS IS NOT "focus-stack" WITH A SHORTER NAME, and reading it
+				// that way is the mistake this comment exists to stop:
+				//
+				//   focus-stack   can TWO views hold focus independently?
+				//   view-focus    can ONE view receive a click at all?
+				//
+				// A backend can answer no to the first and yes to the second,
+				// and the other one does. A consumer that asks "focus-stack"
+				// meaning "can my panel take a click" gets a wrong answer on
+				// every backend, in both directions over time: false before
+				// 1.22.0 because the surface did not exist, and false after it
+				// because that is genuinely the answer to a question it did not
+				// mean to ask.
+				//
+				// False here. The reason is long and belongs with the code it
+				// governs - see SetFocus below. In one line: the framework
+				// captures input per process rather than per view, its unfocus
+				// strands a second view's cursor, and it publishes no panic key
+				// to escape with.
+				if (capability == "view-focus") {
 					return false;
 				}
 
@@ -194,6 +227,62 @@ namespace Lodestone::Core
 				if (g_api && a_slot < g_thunks.size()) {
 					g_api->RegisterJSListener(static_cast<PrismaView>(a_view), a_jsFunction, g_thunks[a_slot]);
 				}
+			}
+
+			// --- Focus, which this backend declines ------------------------
+			//
+			// UNREACHABLE, NOT UNIMPLEMENTED. HasCapability answers false to
+			// "view-focus", and the coordinator asks that before it dispatches,
+			// so neither of these is ever called. They log if they are, because
+			// a call arriving here means the coordinator's gate broke and a
+			// silent no-op would hide that.
+			//
+			// WHY THE CAPABILITY IS false, AND IT IS NOT THAT THE API IS
+			// MISSING. PrismaUI_API.h has Focus, Unfocus, HasFocus and
+			// HasAnyActiveFocus, all of them per view, and calling them would
+			// compile and would do something. Three measured facts say not to:
+			//
+			//   1. Focus is not a local operation here. The framework routes
+			//      input for the whole PROCESS, not per view: one elected view
+			//      id, one capture flag, one "a text field has focus" flag.
+			//      Focusing one view takes the keyboard from every other Prisma
+			//      consumer in the game, including ones that never heard of
+			//      Lodestone.
+			//   2. Unfocus closes the framework's single kModal focus menu for
+			//      every view at once, so a second view on screen is left with a
+			//      stranded cursor. A sibling project of this tree exhausted the
+			//      four-way flag matrix in game - both pauseGame and
+			//      disableFocusMenu, all combinations - and found no mitigation.
+			//      The two public flags do not touch the broken path.
+			//   3. There is no panic key to escape with. The other backend
+			//      publishes an unswallowable chord of its own
+			//      (ToggleBrowserFocusByKeys, IBrowser.h); this API has no
+			//      equivalent, and Lodestone installs no input sink anywhere, so
+			//      a stranded cursor here would leave killing the process as the
+			//      only way out.
+			//
+			// Answering false costs a consumer an interactive panel on this
+			// backend and costs it nothing else: it asks, it gets an honest no,
+			// and it degrades. Answering true would trade that for a failure
+			// mode the player pays for and cannot escape.
+			//
+			// THIS IS A DECISION, NOT A CEILING. It reverses the day somebody
+			// measures the deferred-unfocus path in game and can say what
+			// HasAnyActiveFocus() actually reports while an unfocus is still
+			// queued. Growing false into true is invisible to every consumer
+			// that already asks first, which is why the capability shipped
+			// before the feature.
+			bool SetFocus(ViewHandle) override
+			{
+				spdlog::error("PrismaUIBackend: SetFocus reached a backend that answers false to "
+							  "\"view-focus\" - the coordinator should not have dispatched this.");
+				return false;
+			}
+
+			void ClearFocus(ViewHandle) override
+			{
+				spdlog::error("PrismaUIBackend: ClearFocus reached a backend that answers false to "
+							  "\"view-focus\" - the coordinator should not have dispatched this.");
 			}
 		};
 

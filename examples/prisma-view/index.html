@@ -25,11 +25,15 @@
   matching PrismaRegisterListener call has run, which is why send() below checks
   before calling instead of assuming.
 
-  NOTHING HERE TAKES FOCUS. This view never asks for keyboard or mouse focus, so
-  there is no button that expects a click - the demonstration button is driven by
-  the page itself. Lodestone deliberately exposes no focus surface; see
-  Core/PrismaBridge.h for the defect that decision avoids. A view that needs real
-  input is a different problem and is not solved by this file.
+  NOTHING HERE TAKES FOCUS, AND THAT IS STILL THE RIGHT DEFAULT. This view never
+  asks for keyboard or mouse focus, so nothing in it expects a click. A panel
+  that only shows things should stay this way: it then works on every backend,
+  with no capability to check and nothing to degrade.
+
+  If your panel needs real input, that exists since Lodestone 1.22.0 - see the
+  interactive-view example next to this folder. It is not a drop-in change:
+  input depends on WebUIHasCapability("view-focus"), which is False on Prisma UI,
+  so a page that takes input has to keep working when it never gets any.
 
   No frameworks and no external assets on purpose: Ultralight is not Chromium,
   and every dependency is another thing that renders differently in game than it

@@ -821,15 +821,20 @@ Int Function GetEquipBlockCount() global native
 ; every function here returns its sentinel and nothing else changes. Nothing
 ; inside Lodestone consumes this - it is exposed, never depended on.
 ;
-; THERE IS NO FOCUS SURFACE, AND THAT IS DELIBERATE. Ask
-; WebUIHasCapability("focus-stack") - today it answers False. The backend's focus
-; menu is a single modal menu with no focus stack: unfocusing one view closes it
-; for every view, so with two panels on screen the other one's cursor is
-; stranded. That was measured in game across all four configurations, with no
-; mitigation found, and reported to the backend's author without answer. A panel
-; that never takes focus never meets any of it. If you need real keyboard or
-; mouse input, this bridge is not enough yet - say so and it becomes its own
-; piece of work, defect included.
+; THERE IS A FOCUS SURFACE SINCE 1.22.0, AND IT ANSWERS DIFFERENTLY PER BACKEND.
+; WebUIFocusView, WebUIClearFocus and WebUIIsViewFocused give one view the mouse
+; and keyboard. ASK WebUIHasCapability("view-focus") FIRST: it is True on Meridian
+; UI and False on Prisma UI, and the reason is written at those functions.
+;
+; DO NOT ASK "focus-stack" TO FIND THIS OUT. It answers False on both backends,
+; before AND after 1.22.0, and it is a different question:
+;
+;   focus-stack   can TWO views hold focus independently?   False, everywhere
+;   view-focus    can ONE view receive a click at all?      ask - it varies
+;
+; Asking the first when you meant the second gives you a wrong answer twice over:
+; before 1.22.0 you conclude the surface does not exist, and after it you conclude
+; it was built and left unwired.
 ;
 ; VIEWS ARE NAMED BY YOU, NOT BY A HANDLE. The backend identifies a view with a
 ; 64-bit value and the Papyrus Int is 32 bits, so handing it back would corrupt
@@ -851,7 +856,12 @@ Int Function GetEquipBlockCount() global native
 ;      or poll WebUIIsViewReady(id)
 ;   4. WebUICall(...)               - only now is it delivered
 ;
-; Gate on GetVersion() >= 1018000.
+; And if the panel takes input, two more steps that only work on a backend that
+; answers True to "view-focus":
+;   5. WebUIFocusView(id)           - after WebUIShow, and only then
+;   6. poll WebUIIsViewFocused(id)  - True when the view really has it
+;
+; Gate on GetVersion() >= 1018000 for the surface, and >= 1022000 for focus.
 
 ; Whether a web UI backend is present and answered.
 ;
@@ -975,17 +985,33 @@ String Function WebUIGetBackend() global native
 ;   "view-order"   can a view stacking order be set
 ;   "inspector"    can a developer inspector be opened on a view
 ;
+; Added in 1.22.0:
+;   "view-focus"   can ONE view be given the mouse and keyboard
+;
 ; THE ANSWERS DEPEND ON THE BACKEND, WHICH IS THE ENTIRE POINT OF ASKING HERE
-; RATHER THAN ASKING WHICH BACKEND IT IS. As of 1.21.0:
+; RATHER THAN ASKING WHICH BACKEND IT IS. As of 1.22.0:
 ;
 ;                  Prisma UI   Meridian UI
 ;   focus-stack    False       False
+;   view-focus     False       True
 ;   view-order     True        True
 ;   inspector      True        False
 ;
-; "focus-stack" answers False on both, for different reasons - one has no focus
-; stack, the other arbitrates focus so that exactly one view holds it at a time -
-; and a consumer asking the question does not have to care which.
+; READ THOSE FIRST TWO ROWS TOGETHER, BECAUSE THEY ARE THE TRAP OF THIS WHOLE
+; SURFACE. They look like the same question and they are not:
+;
+;   focus-stack   can TWO views hold focus independently?
+;   view-focus    can ONE view receive a click at all?
+;
+; Meridian UI answers False to the first and True to the second, and both answers
+; are correct: it gives one view the keyboard and forbids two views holding it at
+; once. If you ask "focus-stack" meaning "can my panel take a click", you get
+; False on the one backend that can, and you ship a panel that never offers input.
+;
+; "focus-stack" is False on both, for different reasons - one has no focus stack,
+; the other arbitrates so that exactly one view holds focus at a time - and a
+; consumer asking that question does not have to care which. IT STAYS False. It
+; is not waiting to be implemented.
 ;
 ; Returns False when no backend is present.
 Bool Function WebUIHasCapability(String asCapability) global native
@@ -1005,6 +1031,84 @@ Int Function WebUIGetViewState(String asViewId) global native
 ; Diagnostic: a consumer that expects a known number of listeners can watch this
 ; and notice a registration loop. Returns -1 when no backend is present.
 Int Function WebUIGetListenerSlotsFree() global native
+
+; --- Focus, added in 1.22.0 ---------------------------------------------------
+;
+; Gate on GetVersion() >= 1022000, and then ask
+; WebUIHasCapability("view-focus") - the version tells you the functions exist,
+; the capability tells you whether the installed backend can honour them.
+;
+; NOT EVERY BACKEND CAN, AND THAT IS THE FIRST THING TO PLAN FOR. Meridian UI
+; can; Prisma UI cannot, and answers False. Write the panel so it degrades to
+; display-only rather than assuming input, because on a large share of load
+; orders that is what it will be.
+;
+; WHY PRISMA UI ANSWERS False, since it does have Focus and Unfocus of its own:
+;
+;   1. Its input capture is per PROCESS, not per view. Focusing one view takes
+;      the keyboard from every other Prisma panel in the game, including panels
+;      belonging to mods that never heard of Lodestone.
+;   2. Its unfocus closes a single shared modal menu for every view at once, so
+;      a second panel on screen is left with a stranded cursor. Measured in game
+;      across all four flag configurations, with no mitigation found, and
+;      reported to that backend's author without answer.
+;   3. It publishes no panic key. Meridian UI does, and Lodestone installs no
+;      input handling of its own, so a stranded cursor there would leave killing
+;      the game as the only way out.
+;
+; That is a decision, not a permanent ceiling. It reverses if the behaviour
+; changes or is measured to be safe, and the change is invisible to you: the
+; capability goes from False to True and your existing check starts passing.
+;
+; ONE VIEW AT A TIME. At most one view created through this bridge holds focus,
+; and a second asker is REFUSED rather than queued. That is Lodestone's rule, not
+; the backend's, and it is not the same promise as "focus-stack" - see
+; WebUIHasCapability.
+;
+; FOCUS IS TAKEN AWAY BEHIND YOUR BACK, ON PURPOSE. Lodestone releases it when a
+; save is loaded, when a new game starts, and when any menu that pauses the game
+; opens. The player can also drop it at any moment with the backend's own panic
+; chord - Ctrl+Backspace by default, settable as WebUIPanicKeys in
+; Data\SKSE\Plugins\Lodestone.ini. YOU CANNOT DISABLE THAT, and you should not
+; want to: it is what stops a broken page from making the game unplayable.
+;
+; So never assume you still have focus because you asked for it once. Ask
+; WebUIIsViewFocused.
+
+; Asks for the view to receive the mouse and keyboard.
+;
+; Returns True when the request was ACCEPTED, not when the view has focus - the
+; same contract as every other mutating call here. Poll WebUIIsViewFocused, which
+; is the answer that matters.
+;
+; Returns False, immediately and for a reason you can act on, when: no backend is
+; present, the backend answers False to "view-focus", the view id is unknown, the
+; view is not ready yet, the view is hidden, or another view already holds focus.
+;
+; Call it AFTER WebUIShow. A hidden view is refused, because focus on something
+; the player cannot see is the exact state the panic chord exists to undo.
+Bool Function WebUIFocusView(String asViewId) global native
+
+; Gives the mouse and keyboard back to the game.
+;
+; Returns True when asViewId was the view holding focus and the release was
+; requested, False otherwise - so it also answers "did I still have it".
+;
+; IT TAKES A VIEW ID ON PURPOSE. Every function here is reachable by every mod in
+; the load order; a version without the id would let any mod drop any other mod's
+; focus from a script that never mentioned it.
+Bool Function WebUIClearFocus(String asViewId) global native
+
+; Whether the view is receiving the mouse and keyboard right now.
+;
+; THIS IS THE ONE TO POLL. WebUIFocusView answers "accepted"; this answers "has
+; it". It also catches every way focus goes away without you - the automatic
+; releases above, the panic chord, and the backend handing focus elsewhere.
+;
+; Answered from what the backend last reported observing, so it can lag a change
+; by a fraction of a second. Returns False for an unknown id and when no backend
+; is present.
+Bool Function WebUIIsViewFocused(String asViewId) global native
 
 ;--------------------------------------------------------------
 ; DEPRECATED - the 1.17.x names

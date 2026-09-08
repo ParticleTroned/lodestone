@@ -17,7 +17,8 @@
 //                view root, its name, and what it can and cannot do.
 //   Coordinator  the view table keyed by the consumer's own string id, the
 //                listener slot pool, the mod events, the main-thread dispatch,
-//                and all 22 natives. None of that changes with the vendor.
+//                the single-holder focus policy, and all 25 natives. None of
+//                that changes with the vendor.
 //
 // Test, when it is not obvious: if the code would read identically for a
 // framework nobody has written yet, it is the coordinator's.
@@ -28,10 +29,10 @@
 // running on the Papyrus VM thread. A backend never has to queue anything of its
 // own, and must not assume it may block.
 //
-// REPORTING BACK RUNS THE OTHER WAY AND ON ANY THREAD. A backend calls the two
-// functions in WebUIBackendCallbacks below from whatever thread its framework
-// hands it, which is generally not the game thread. Those two are the only
-// entry points a backend has into the coordinator.
+// REPORTING BACK RUNS THE OTHER WAY AND ON ANY THREAD. A backend calls the
+// three functions in WebUIBackendCallbacks below from whatever thread its
+// framework hands it, which is generally not the game thread. Those three are
+// the only entry points a backend has into the coordinator.
 
 #pragma once
 
@@ -179,6 +180,43 @@ namespace Lodestone::Core
 		//
 		// a_slot is always below kWebUIMaxListeners.
 		virtual void RegisterListener(ViewHandle a_view, const char* a_jsFunction, std::size_t a_slot) = 0;
+
+		// --- Focus ------------------------------------------------------------
+		//
+		// Whether the view receives the game's mouse and keyboard. Both run on
+		// the main game thread, like every other operation above.
+		//
+		// A BACKEND THAT ANSWERS false TO "view-focus" IS NEVER ASKED. The
+		// coordinator checks the capability before it dispatches anything, so on
+		// such a backend these two are unreachable rather than merely unused, and
+		// their bodies say that instead of pretending to work.
+		//
+		// THIS IS NOT "focus-stack", AND THE TWO ARE DIFFERENT QUESTIONS. That
+		// capability asks whether TWO views can hold focus independently, and it
+		// answers false on every backend here. These two ask for ONE view to
+		// receive input, which is a thing a backend can do while having no stack
+		// at all. See HasCapability in each backend for the trap this pair of
+		// names sets, and Lodestone.psc for the same warning facing consumers.
+
+		// Gives the view the mouse and keyboard.
+		//
+		// Returns whether the backend accepted the request. False means nothing
+		// changed, and the coordinator logs it - the return value cannot reach
+		// the Papyrus caller, because by then the native has long since answered
+		// on another thread.
+		//
+		// THE TRUTH ABOUT WHO HOLDS FOCUS COMES BACK THROUGH FocusChanged, NOT
+		// FROM HERE. A backend that accepts may still lose focus a frame later,
+		// to its own arbitration or to the player.
+		virtual bool SetFocus(ViewHandle a_view) = 0;
+
+		// Takes the mouse and keyboard away from the view.
+		//
+		// Must be safe to call on a view that does not hold focus: the
+		// coordinator calls it on save load and on menu transitions without
+		// asking first, because asking would cost a round trip to learn
+		// something it is about to overwrite anyway.
+		virtual void ClearFocus(ViewHandle a_view) = 0;
 	};
 
 	// The only way back in. Called by a backend, from any thread.
@@ -197,6 +235,22 @@ namespace Lodestone::Core
 		// a_argument may be null. It does not outlive the call, so the
 		// coordinator copies it before doing anything asynchronous.
 		void ListenerFired(std::size_t a_slot, const char* a_argument);
+
+		// A view gained or lost the mouse and keyboard.
+		//
+		// SENT FOR EVERY CHANGE, INCLUDING THE ONES THE BRIDGE DID NOT CAUSE,
+		// and that is the entire reason this exists rather than the coordinator
+		// simply remembering what it last asked for. Focus moves without the
+		// bridge in at least three ways: a backend that arbitrates hands it to
+		// somebody else, the player presses the backend's own panic chord, and a
+		// view is torn down while holding it. A mirror of intent would go on
+		// claiming a view has focus that the player already escaped, and the
+		// coordinator would then refuse the next consumer forever.
+		//
+		// A backend reports this from wherever it notices, which for one of them
+		// is the same game-thread poll that already watches for page loads. An
+		// unknown handle is ignored, like ViewReady's.
+		void FocusChanged(IWebUIBackend* a_backend, IWebUIBackend::ViewHandle a_view, bool a_focused);
 	}
 
 	// The backends this DLL was built with.

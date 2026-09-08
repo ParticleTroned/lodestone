@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lodestone interactive view example</title>
+<!--
+  Lodestone - a view that takes input.
+
+  A starting point for a consumer, not a component to ship as-is. The sibling
+  example next to this one is display-only and is the right place to start if
+  your panel only shows things; this one is for a panel with buttons and fields.
+
+  SHIP IT TO BOTH ROOTS, because which backend the player has is not your
+  choice:
+
+    Prisma UI      Data\PrismaUI\views\<YourModName>\
+    Meridian UI    Data\MeridianUI\Lodestone\<YourModName>\
+
+  The same bytes work on both. The path you pass to WebUICreateView does not
+  change; only where it is rooted does.
+
+  THE THING THIS EXAMPLE IS ACTUALLY ABOUT: INPUT IS NOT GUARANTEED.
+
+  A view receives clicks and keystrokes only while it holds focus, and not every
+  backend can give it focus. Ask before you assume:
+
+    Lodestone.WebUIHasCapability("view-focus")     True on Meridian UI
+                                                   False on Prisma UI
+
+  Do NOT ask "focus-stack" instead. It is a different question - whether TWO
+  views can hold focus independently - it answers False on every backend, and it
+  will go on answering False. Asking it when you meant "view-focus" tells you
+  the one backend that CAN take a click cannot.
+
+  So this page is written to be useful with or without focus. Everything it
+  displays keeps working; the controls simply say they are unavailable. That is
+  not defensive habit - on a large share of load orders it is what the player
+  will actually see, and a panel whose buttons look live but do nothing is worse
+  than one that says why.
+
+  THE PAPYRUS SIDE, in the order it has to happen:
+
+    1. WebUIAvailable()                       - no backend, no panel
+    2. WebUICreateView(id, path)              - returns before the view is ready
+    3. wait for LodestoneWebUIViewReady       - or poll WebUIIsViewReady(id)
+    4. WebUIRegisterListener(id, jsName, ev)  - each name the page sends on
+    5. WebUICall(id, "LodestoneExampleUpdate", json)
+    6. WebUIShow(id)
+    7. WebUIFocusView(id)                     - ONLY if "view-focus" is True
+    8. poll WebUIIsViewFocused(id)            - and tell the page, step 9
+    9. WebUICall(id, "LodestoneExampleFocus", "{\"focused\":true}")
+
+  Step 9 is what lights the controls up. The page cannot find out on its own:
+  a web page has no way to ask the game whether the game is routing input to it.
+
+  FOCUS GOES AWAY WITHOUT YOU ASKING, AND YOUR PAGE HAS TO SURVIVE IT. Lodestone
+  releases it when a save loads, when a new game starts, and when any menu that
+  pauses the game opens. The player can also drop it at any moment with the
+  backend's panic chord - Ctrl+Backspace by default - which no mod can disable.
+  Keep polling WebUIIsViewFocused and keep telling the page; do not assume that
+  because you asked once, you still have it.
+
+  Gate on Lodestone.GetVersion() >= 1022000 for the focus functions, and on
+  >= 1018000 for the rest of the WebUI surface.
+
+  No frameworks and no external assets on purpose. The two backends do not share
+  a renderer - one is Ultralight and the other is CEF - and every dependency is
+  another thing that renders differently in game than it did in a browser.
+-->
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+  }
+
+  body {
+    font-family: Georgia, "Times New Roman", serif;
+    color: #e8e2d0;
+    cursor: default;
+  }
+
+  #panel {
+    position: absolute;
+    top: 40px;
+    right: 40px;
+    width: 260px;
+    padding: 12px 16px;
+    background: rgba(12, 12, 14, 0.72);
+    border: 1px solid rgba(200, 180, 130, 0.35);
+    border-radius: 3px;
+    /* Hidden until the first update arrives. An empty frame on screen before
+       Papyrus has said anything reads as a broken mod. */
+    opacity: 0;
+    transition: opacity 180ms ease-out;
+  }
+
+  #panel.ready {
+    opacity: 1;
+  }
+
+  #label {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(200, 180, 130, 0.75);
+    /* The read-only half stays unselectable. With no focus a stray selection is
+       the only thing a pointer could do, and it looks like a bug. */
+    user-select: none;
+  }
+
+  #value {
+    font-size: 26px;
+    line-height: 1.2;
+    margin-top: 2px;
+    user-select: none;
+  }
+
+  #controls {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(200, 180, 130, 0.2);
+  }
+
+  /* THE UNFOCUSED STATE IS A REAL STATE, NOT AN ERROR STATE, and it is styled
+     to look deliberate rather than broken. On a backend without focus this is
+     what the player sees for the whole life of the panel. */
+  #controls.no-input input,
+  #controls.no-input button {
+    opacity: 0.4;
+  }
+
+  #note {
+    margin-top: 8px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: rgba(200, 180, 130, 0.6);
+    user-select: none;
+    /* Takes no space until there is something to say, so the panel does not
+       reserve a gap that stays empty on the backend that does focus fine. */
+    display: none;
+  }
+
+  #note.shown {
+    display: block;
+  }
+
+  input[type="text"] {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 5px 7px;
+    font-family: inherit;
+    font-size: 14px;
+    color: #e8e2d0;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(200, 180, 130, 0.35);
+    border-radius: 2px;
+    /* The one place selection has to work. */
+    user-select: text;
+  }
+
+  input[type="text"]:focus {
+    outline: none;
+    border-color: rgba(200, 180, 130, 0.8);
+  }
+
+  button {
+    margin-top: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    font-family: inherit;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    color: #e8e2d0;
+    background: rgba(200, 180, 130, 0.18);
+    border: 1px solid rgba(200, 180, 130, 0.45);
+    border-radius: 2px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  button:hover {
+    background: rgba(200, 180, 130, 0.3);
+  }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <div id="label">Lodestone</div>
+  <div id="value">--</div>
+
+  <div id="controls" class="no-input">
+    <input type="text" id="entry" placeholder="Name it">
+    <button type="button" id="submit">Accept</button>
+    <div id="note" class="shown">This panel is read-only with the web UI backend you have installed.</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var panel = document.getElementById("panel");
+  var label = document.getElementById("label");
+  var value = document.getElementById("value");
+  var controls = document.getElementById("controls");
+  var entry = document.getElementById("entry");
+  var submit = document.getElementById("submit");
+  var note = document.getElementById("note");
+
+  // Whether the game is routing input here. Starts false and STAYS false until
+  // Papyrus says otherwise, which is the safe default: a page that assumes it
+  // has focus offers controls that swallow clicks going nowhere.
+  var hasFocus = false;
+
+  // Sends to Papyrus through a function the backend injected.
+  //
+  // Returns false when the name has not been registered from the Papyrus side
+  // yet. That is a normal state during startup, not an error: the page can load
+  // before the consumer's script has called WebUIRegisterListener.
+  //
+  // WORKS ON BOTH BACKENDS. One injects onto the bare window and the other hangs
+  // its bindings off an object, but Lodestone installs a bare-window alias on
+  // every page load so this lookup finds the function either way.
+  function send(name, arg) {
+    var fn = window[name];
+    if (typeof fn === "function") {
+      fn(arg === undefined || arg === null ? "" : String(arg));
+      return true;
+    }
+    return false;
+  }
+
+  // --- Received from Papyrus ---------------------------------------------
+  //
+  // RENAME THESE for your own mod, and pass the new names to WebUICall. The name
+  // is the contract between the two sides and nothing validates it: a typo is a
+  // call that silently does nothing.
+
+  window.LodestoneExampleUpdate = function (argJson) {
+    var data;
+
+    // Papyrus has no JSON encoder of its own, so whatever a consumer sends is
+    // hand-built and worth guarding. A parse error here is a bug in the sender
+    // and has to be visible somewhere, or it looks like the panel froze.
+    try {
+      data = JSON.parse(argJson);
+    } catch (err) {
+      send("LodestoneExampleLog", "bad payload: " + err.message);
+      return;
+    }
+
+    if (data.label !== undefined) {
+      label.textContent = String(data.label);
+    }
+    if (data.value !== undefined) {
+      value.textContent = String(data.value);
+    }
+
+    panel.className = "ready";
+  };
+
+  // Told by Papyrus after it polls WebUIIsViewFocused.
+  //
+  // CALL THIS EVERY TIME THE ANSWER CHANGES, IN BOTH DIRECTIONS. Focus is taken
+  // away by things neither side initiated - a save loading, a menu opening, the
+  // player's panic chord - and a page that was told "true" once will go on
+  // showing live controls long after the game stopped listening to them.
+  window.LodestoneExampleFocus = function (argJson) {
+    var data;
+
+    try {
+      data = JSON.parse(argJson);
+    } catch (err) {
+      send("LodestoneExampleLog", "bad focus payload: " + err.message);
+      return;
+    }
+
+    hasFocus = data.focused === true;
+    controls.className = hasFocus ? "" : "no-input";
+    note.className = hasFocus ? "" : "shown";
+
+    // Give up the caret when focus goes. Leaving a blinking cursor in a field
+    // the player can no longer type into is the single most confusing thing
+    // this page could do.
+    if (!hasFocus) {
+      entry.blur();
+    }
+  };
+
+  // --- Sent to Papyrus ----------------------------------------------------
+
+  function accept() {
+    // Guarded rather than trusted. A click can still arrive here on a backend
+    // that never gave this view focus - a page is not told what the game is
+    // routing - and acting on it would let the panel do things the player never
+    // actually reached it to do.
+    if (!hasFocus) {
+      return;
+    }
+
+    if (send("LodestoneExampleAccept", entry.value)) {
+      entry.value = "";
+    }
+  }
+
+  submit.addEventListener("click", accept);
+
+  entry.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      accept();
+    }
+  });
+
+  // Anything the page throws goes back to the consumer as a mod event, if it
+  // registered a listener for it. Without this an error in the view is invisible
+  // from the game side - the panel simply stops updating.
+  window.onerror = function (message, source, line) {
+    send("LodestoneExampleLog", "js-error: " + message + " at " + line);
+    return false;
+  };
+
+  // Tells the consumer the page is alive. This is the page's own signal and is
+  // NOT the same thing as the LodestoneWebUIViewReady mod event, which Lodestone
+  // sends whether or not a page does anything. Use the Lodestone one to know
+  // when WebUICall will be delivered; use one like this only if your page has
+  // its own setup to finish first.
+  send("LodestoneExampleReady", "");
+}());
+</script>
+
+</body>
+</html>

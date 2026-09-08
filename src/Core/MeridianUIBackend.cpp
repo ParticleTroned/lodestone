@@ -26,6 +26,8 @@
 
 #include "WebUIBackend.h"
 
+#include "Config.h"
+
 #include "API.h"
 #include "SKSELoader.h"
 
@@ -185,6 +187,26 @@ namespace Lodestone::Core
 			// reasoning from a position reset the author reported on
 			// 2026-09-07, not by anything failing loudly.
 			std::vector<std::string> aliases;
+
+			// Whether the browser held focus at the last poll.
+			//
+			// OBSERVED, NOT REQUESTED, and that distinction is the reason the
+			// bridge can be honest about focus at all. Meridian moves focus for
+			// reasons this file never sees: it arbitrates between every
+			// consumer in the process, and its own panic chord toggles focus
+			// straight inside the platform. Both are invisible from here except
+			// by asking IsBrowserFocused(), which is what the watcher does.
+			bool focused = false;
+
+			// Whether the panic chord is currently registered on this browser.
+			//
+			// ARMED ONLY WHILE THE BROWSER ACTUALLY HOLDS FOCUS. Arming every
+			// browser at creation was the first design and is wrong: the chord
+			// is a TOGGLE, and Meridian evaluates a registered chord for every
+			// browser, so a press would also toggle focus ON for a hidden view -
+			// capturing input with nothing on screen, which is the exact
+			// stranded state the chord exists to escape.
+			bool chordArmed = false;
 		};
 
 		std::vector<BrowserRecord> g_browsers;
@@ -323,6 +345,147 @@ namespace Lodestone::Core
 		// once per process.
 		std::atomic<bool> g_watcherStarted{ false };
 
+		// --- The panic chord ----------------------------------------------------
+		//
+		// THE PLAYER'S WAY OUT, AND NO CONSUMER CAN TURN IT OFF. A view holding
+		// focus swallows mouse and keyboard, so a panel whose script stops
+		// running - a broken page, a Papyrus error, a mod uninstalled mid-save -
+		// would otherwise leave killing the game as the only way to move again.
+		//
+		// IT IS THE BACKEND'S, NOT THIS PLUGIN'S, AND THAT IS WHY IT WORKS.
+		// IBrowser::ToggleBrowserFocusByKeys registers the chord inside Meridian,
+		// and the header states the guarantee as a 1.0 contract: the chord is
+		// evaluated for EVERY browser before any focused browser can swallow the
+		// event. Lodestone installs no input sink anywhere - it never has - so
+		// nothing this plugin could write would reach a key the focused browser
+		// already ate.
+		//
+		// That is also exactly the reason the other backend answers false to
+		// "view-focus": it publishes no equivalent, so there would be no way out
+		// of a state this bridge put the player in.
+
+		// The chord, in RE::BSKeyboardDevice::Keys scan codes.
+		//
+		// Ctrl+Backspace by default: unbound in vanilla Skyrim, reachable with
+		// one hand, and not a chord a page is likely to want for itself.
+		std::uint32_t g_panicKey1 = RE::BSKeyboardDevice::Keys::kLeftControl;
+		std::uint32_t g_panicKey2 = RE::BSKeyboardDevice::Keys::kBackspace;
+
+		// Whether the ini has been read. Once per process, at the first arming.
+		bool g_panicKeysRead = false;
+
+		// Reads one scan code out of an ini value, decimal or 0x hex.
+		//
+		// Returns false for anything it does not understand, INCLUDING a value
+		// out of range, and the caller keeps the default. A typo that silently
+		// became key 0 would disable the escape hatch, which is the one outcome
+		// this file may not produce quietly.
+		bool ParseScanCode(std::string_view a_text, std::uint32_t& a_out)
+		{
+			const std::string trimmed = Config::Trim(a_text);
+			if (trimmed.empty()) {
+				return false;
+			}
+
+			int  base  = 10;
+			auto digits = std::string_view(trimmed);
+			if (digits.size() > 2 && digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X')) {
+				base = 16;
+				digits.remove_prefix(2);
+			}
+
+			unsigned long value = 0;
+			try {
+				std::size_t consumed = 0;
+				value                = std::stoul(std::string(digits), &consumed, base);
+				if (consumed != digits.size()) {
+					return false;
+				}
+			} catch (...) {
+				return false;
+			}
+
+			// The keyboard device's codes are one byte. Anything above that is a
+			// typo, not a key.
+			if (value == 0 || value > 0xFF) {
+				return false;
+			}
+
+			a_out = static_cast<std::uint32_t>(value);
+			return true;
+		}
+
+		// Reads WebUIPanicKeys from Lodestone.ini, once.
+		//
+		// Format is two scan codes separated by '|', matching the shape EquipVeto
+		// already uses in the same file. An unreadable or absent value leaves the
+		// default in place and says so, because a player who tried to set this
+		// and got the default instead needs to know.
+		void ReadPanicKeys()
+		{
+			if (g_panicKeysRead) {
+				return;
+			}
+			g_panicKeysRead = true;
+
+			std::string raw;
+			Config::ForEachPair([&raw](std::string_view a_key, std::string_view a_value) {
+				if (a_key == "webuipanickeys") {
+					raw = a_value;
+				}
+			});
+
+			if (raw.empty()) {
+				return;
+			}
+
+			const auto separator = raw.find('|');
+			if (separator == std::string::npos) {
+				spdlog::warn("MeridianUIBackend: WebUIPanicKeys is '{}', which is not two scan codes "
+							 "separated by '|' - keeping the default Ctrl+Backspace.",
+					raw);
+				return;
+			}
+
+			std::uint32_t key1 = 0;
+			std::uint32_t key2 = 0;
+			if (!ParseScanCode(std::string_view(raw).substr(0, separator), key1) ||
+				!ParseScanCode(std::string_view(raw).substr(separator + 1), key2)) {
+				spdlog::warn("MeridianUIBackend: WebUIPanicKeys is '{}', and at least one half is not a "
+							 "scan code between 1 and 255 - keeping the default Ctrl+Backspace.",
+					raw);
+				return;
+			}
+
+			g_panicKey1 = key1;
+			g_panicKey2 = key2;
+			spdlog::info("MeridianUIBackend: panic chord set from Lodestone.ini to scan codes "
+						 "0x{:02X} + 0x{:02X}.",
+				g_panicKey1, g_panicKey2);
+		}
+
+		// Arms or disarms the chord on one browser. GAME THREAD ONLY.
+		//
+		// Driven by what the watcher OBSERVES, never by what was requested, so
+		// the chord follows the browser that actually holds focus even when this
+		// plugin did not put it there.
+		void SetChord(BrowserRecord& a_record, bool a_arm)
+		{
+			if (!a_record.browser || a_record.chordArmed == a_arm) {
+				return;
+			}
+
+			if (a_arm) {
+				ReadPanicKeys();
+				a_record.browser->ToggleBrowserFocusByKeys(g_panicKey1, g_panicKey2);
+			} else {
+				// Zeros disable, per IBrowser.h.
+				a_record.browser->ToggleBrowserFocusByKeys(0, 0);
+			}
+
+			a_record.chordArmed = a_arm;
+		}
+
 		// One pass over every view still loading. GAME THREAD ONLY - it is
 		// posted there by the watcher thread and touches g_browsers, which
 		// belongs to that thread.
@@ -387,6 +550,54 @@ namespace Lodestone::Core
 			}
 		}
 
+		// One pass over every view's focus. GAME THREAD ONLY, same as PollReady
+		// and posted by the same thread on the same interval.
+		//
+		// WHY POLLING AND NOT A CALLBACK: there is none. Meridian has no
+		// focus-changed notification anywhere in the API - the same gap that
+		// forced PollReady to earn the page-ready event by asking. IBrowser
+		// offers IsBrowserFocused(), a question, and this is where it gets asked.
+		//
+		// WHY IT HAS TO BE ASKED AT ALL, rather than the bridge remembering what
+		// it requested. Focus moves without this plugin at least three ways: the
+		// platform arbitrates it away to another consumer, the player presses the
+		// panic chord, and a browser loses it on teardown. A remembered value
+		// would claim a consumer still holds focus the player escaped, and the
+		// bridge's single-holder rule would then refuse everybody, forever, with
+		// nothing in the log to say why.
+		//
+		// The cost is one virtual call per view per hundred milliseconds, on top
+		// of the two PollReady already makes, and it buys the panic chord its
+		// arming: the chord follows the browser that actually holds focus.
+		void PollFocus()
+		{
+			for (auto& record : g_browsers) {
+				if (!record.browser) {
+					continue;
+				}
+
+				const bool nowFocused = record.browser->IsBrowserFocused();
+				if (nowFocused == record.focused) {
+					continue;
+				}
+
+				record.focused = nowFocused;
+
+				// Armed on the way in, disarmed on the way out. Done before the
+				// bridge is told, so the escape hatch is live by the time any
+				// consumer can learn it has focus.
+				SetChord(record, nowFocused);
+
+				try {
+					WebUIBackendCallbacks::FocusChanged(
+						WebUIBackends::MeridianUI(), record.handle, nowFocused);
+				} catch (...) {
+					spdlog::error("MeridianUIBackend: reporting a focus change threw - the bridge's "
+								  "view of who holds focus is now stale.");
+				}
+			}
+		}
+
 		// Sleeps, and posts one PollReady to the game thread per interval while
 		// anything is loading.
 		//
@@ -416,7 +627,10 @@ namespace Lodestone::Core
 				}
 
 				if (auto* task = SKSE::GetTaskInterface()) {
-					task->AddTask([]() { PollReady(); });
+					task->AddTask([]() {
+						PollReady();
+						PollFocus();
+					});
 				}
 			}
 		}
@@ -563,8 +777,40 @@ namespace Lodestone::Core
 				// views being independently focusable, and the answer is no on
 				// both backends - which is the point of asking about the
 				// capability instead of the backend's name.
+				// IT STAYS false IN 1.22.0, WHICH IS THE VERSION MOST LIKELY TO
+				// MAKE SOMEBODY "FIX" IT. This backend gained a working focus
+				// surface in that version and answers true to "view-focus"
+				// below, so the two lines now sit next to each other looking
+				// contradictory. They are not. Meridian giving ONE view the
+				// keyboard is precisely what it does; TWO views holding it
+				// independently is precisely what its arbitration forbids.
 				if (capability == "focus-stack") {
 					return false;
+				}
+
+				// "view-focus": can ONE view be given the mouse and keyboard.
+				//
+				// THE PAIR OF NAMES IS A TRAP AND THIS IS THE SIGN ON IT:
+				//
+				//   focus-stack   can TWO views hold focus independently?   false
+				//   view-focus    can ONE view receive a click at all?       true
+				//
+				// A consumer that asks the first meaning the second gets a
+				// wrong answer here in the most expensive direction: it
+				// concludes this backend cannot take a click, on the one
+				// backend that can, and ships a panel that never offers input.
+				//
+				// True, and the three things that make it honest rather than
+				// optimistic: focus is per browser (SetBrowserFocused,
+				// IBrowser.h:57); it is observable, so the bridge can tell who
+				// really holds it (IsBrowserFocused, :58); and there is an
+				// unswallowable way out for the player
+				// (ToggleBrowserFocusByKeys, :71, whose header states the
+				// evaluation order as a 1.0 contract). The third is not a nicety
+				// - it is what the other backend lacks, and why it answers
+				// false.
+				if (capability == "view-focus") {
+					return true;
 				}
 
 				// "view-order": IBrowser::SetBrowserZOrder, higher draws on top.
@@ -759,6 +1005,47 @@ namespace Lodestone::Core
 
 				if (record->loaded) {
 					InstallAlias(record->browser, g_slotNames[a_slot]);
+				}
+			}
+
+			// --- Focus ------------------------------------------------------
+			//
+			// Two one-line calls, and the machinery that makes them trustworthy
+			// is elsewhere: PollFocus observes what actually happened, SetChord
+			// keeps the player's escape hatch on the browser that holds focus,
+			// and FocusChanged tells the bridge. Nothing below writes
+			// record->focused - the watcher owns it, and a value written here
+			// would be intent rather than observation.
+
+			bool SetFocus(ViewHandle a_view) override
+			{
+				auto* record = Find(a_view);
+				if (!record || !record->browser) {
+					return false;
+				}
+
+				// A browser that has not finished loading has no page to give
+				// input to, and focusing one would capture the mouse against a
+				// blank surface.
+				if (!record->loaded) {
+					spdlog::warn("MeridianUIBackend: refusing focus for a view whose page has not "
+								 "loaded yet.");
+					return false;
+				}
+
+				// NO RETURN VALUE TO CHECK - SetBrowserFocused is void
+				// (IBrowser.h:57), so "the platform accepted" is not a thing
+				// this API can be asked. True here means the call was made, and
+				// whether it took is answered by the next PollFocus, which is
+				// the only honest answer available.
+				record->browser->SetBrowserFocused(true);
+				return true;
+			}
+
+			void ClearFocus(ViewHandle a_view) override
+			{
+				if (auto* record = Find(a_view); record && record->browser) {
+					record->browser->SetBrowserFocused(false);
 				}
 			}
 		};

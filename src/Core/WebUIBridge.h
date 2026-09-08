@@ -43,22 +43,27 @@
 // disappears, every consumer of this module degrades to "no panel" and no other
 // part of Lodestone notices.
 //
-// NO FOCUS SURFACE IN THIS VERSION, AND IT IS NOT AN OVERSIGHT. Focus, Unfocus,
-// HasFocus and HasAnyActiveFocus are deliberately not exposed. Prisma's
-// FocusMenu is a single kModal IMenu with no focus stack: Unfocus(view) closes
-// it unconditionally, so with two Prisma views on screen the other one's cursor
-// is stranded. A sibling project of this tree exhausted the four-way
-// configuration matrix in game and found no mitigation, and the two public flags
-// do not touch the broken path. A widget that never calls Focus never meets any
-// of that. Exposing focus that no consumer has asked for would import the defect
-// into this framework for free. It arrives when a consumer needs input, and the
-// defect becomes that phase's problem, openly.
+// THERE IS A FOCUS SURFACE SINCE 1.22.0, AND IT ANSWERS DIFFERENTLY PER
+// BACKEND. WebUIFocusView, WebUIClearFocus and WebUIIsViewFocused let one view
+// receive the game's mouse and keyboard. A consumer asks whether the installed
+// backend can do it at all with WebUIHasCapability("view-focus") - and asks
+// FIRST, because the honest answer on one of the two is no.
 //
-// A consumer asks about that with WebUIHasCapability("focus-stack"), which
-// answers False.
+// The single-holder rule is this module's: at most one view created through
+// this bridge holds focus at a time, and the second asker is refused rather
+// than queued. Focus is released automatically when a save loads, when a new
+// game starts, and when a menu that pauses the game opens; the player's own
+// escape is the backend's panic chord, which no consumer can disable.
 //
-// Version gate for consumers of the current surface:
-// Lodestone.GetVersion() >= 1018000 (1.18.0). The 1.17.x names still answer.
+// "focus-stack" STILL ANSWERS False, AND THAT IS NOT A LEFTOVER. It asks
+// whether TWO views can hold focus INDEPENDENTLY, which no backend here can do
+// and which the paragraph above deliberately does not promise either. The two
+// names are one keystroke apart in meaning and worlds apart in answer - see the
+// trap written out in both backends and in Lodestone.psc.
+//
+// Version gates for consumers:
+//   >= 1018000 (1.18.0)  the WebUI* surface. The 1.17.x names still answer.
+//   >= 1022000 (1.22.0)  the three focus natives and "view-focus".
 
 #pragma once
 
@@ -99,11 +104,12 @@ namespace Lodestone::Core::WebUIBridge
 
 	// Registers this module's natives on the "Lodestone" script.
 	//
-	// 22 in total. The 13 of the current surface: WebUIAvailable,
+	// 25 in total. The 16 of the current surface: WebUIAvailable,
 	// WebUICreateView, WebUIIsViewReady, WebUICall, WebUIShow, WebUIHide,
 	// WebUIIsViewVisible, WebUIDestroyView, WebUIRegisterListener,
 	// WebUIGetBackend, WebUIHasCapability, WebUIGetViewState,
-	// WebUIGetListenerSlotsFree.
+	// WebUIGetListenerSlotsFree, WebUIFocusView, WebUIClearFocus,
+	// WebUIIsViewFocused.
 	//
 	// And the 9 deprecated 1.17.x names, which forward: PrismaAvailable,
 	// PrismaCreateView, PrismaIsViewReady, PrismaCall, PrismaShow, PrismaHide,

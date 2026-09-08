@@ -2,12 +2,13 @@
 // Lodestone - Shared SKSE framework
 //
 // The backend-neutral half of the WebUI bridge: the view table, the listener
-// slot pool, the mod events, the main-thread dispatch, and all 22 natives.
-// Nothing here names a vendor or includes a vendor's header.
+// slot pool, the mod events, the main-thread dispatch, the single-holder focus
+// policy, and all 25 natives. Nothing here names a vendor or includes a
+// vendor's header.
 //
-// See WebUIBridge.h for why this module exists, why it is Core, and why it
-// exposes no focus surface. See WebUIBackend.h for the seam, and
-// PrismaUIBackend.cpp for the Prisma UI side of it.
+// See WebUIBridge.h for why this module exists and why it is Core. See
+// WebUIBackend.h for the seam, and PrismaUIBackend.cpp and MeridianUIBackend.cpp
+// for the two sides of it.
 
 #include "WebUIBridge.h"
 
@@ -214,6 +215,24 @@ namespace Lodestone::Core::WebUIBridge
 			// mirror is exact for every transition this module made, and this
 			// module is the only thing that can move a view it created.
 			bool hidden = false;
+
+			// Whether this view holds the game's mouse and keyboard.
+			//
+			// NOT A MIRROR OF INTENT, AND THAT IS THE DIFFERENCE FROM `hidden`
+			// ABOVE. Visibility only ever changes because this module changed
+			// it, so remembering what it asked for is exact. Focus does not
+			// behave that way: a backend that arbitrates can hand it to somebody
+			// else, the player can take it back with the backend's own panic
+			// chord, and a view can be destroyed while holding it. None of those
+			// pass through here.
+			//
+			// So this is written from WebUIBackendCallbacks::FocusChanged, which
+			// a backend sends when it OBSERVES a change rather than when one is
+			// requested. The cost is that it lags reality by one poll interval;
+			// the alternative was a field that goes on claiming a consumer holds
+			// focus that the player escaped ten minutes ago, which would refuse
+			// every later request forever.
+			bool focused = false;
 		};
 
 		std::unordered_map<std::string, ViewRecord> g_views;
@@ -321,6 +340,165 @@ namespace Lodestone::Core::WebUIBridge
 		// before the one known consumer has migrated.
 		constexpr const char* kViewReadyEvent           = "LodestoneWebUIViewReady";
 		constexpr const char* kViewReadyEventDeprecated = "LodestonePrismaViewReady";
+
+		// --- Focus ---------------------------------------------------------------
+
+		// The capability name the focus natives gate on.
+		//
+		// "view-focus" AND NOT "focus", AND THE NAME IS THE WHOLE POINT.
+		// "focus-stack" already exists and answers false on every backend, and a
+		// capability called plain "focus" sitting next to it reads like the same
+		// question shortened. It is not:
+		//
+		//   focus-stack   can TWO views hold focus independently?   false, always
+		//   view-focus    can ONE view receive a click at all?      backend's answer
+		//
+		// A consumer that asks the first meaning the second is wrong in both
+		// eras - it concluded "no input surface" before 1.22.0 because the
+		// surface did not exist, and it concludes "they built it and did not wire
+		// it up" after, because false is still the honest answer to the question
+		// it actually asked.
+		constexpr const char* kViewFocusCapability = "view-focus";
+
+		// The view holding focus, or empty. CALLER HOLDS g_mutex.
+		//
+		// Scanned rather than cached in a variable of its own. The map holds a
+		// handful of views and this runs on a player pressing a key, not on a
+		// frame; a second copy of the same fact is a second thing to keep in
+		// step with FocusChanged, and this module already learned that lesson
+		// once with the handle-versus-key problem above.
+		std::string FocusHolder()
+		{
+			for (const auto& entry : g_views) {
+				if (entry.second.focused) {
+					return entry.first;
+				}
+			}
+			return {};
+		}
+
+		// Drops focus from whatever holds it, for a reason worth a log line.
+		//
+		// USED BY THE AUTOMATIC RELEASES, which is why it takes no view id: the
+		// events that call it - a save being loaded, a menu that pauses the game
+		// opening - are not about a particular view, they are about the player
+		// no longer being in the panel.
+		//
+		// Safe when nothing holds focus, and silent then. These fire on ordinary
+		// gameplay, so a line per menu opened would be log spam of the exact kind
+		// this plugin's release log was cleaned up to avoid.
+		void ReleaseFocus(const char* a_reason)
+		{
+			auto* backend = Active();
+			if (!backend) {
+				return;
+			}
+
+			IWebUIBackend::ViewHandle handle = 0;
+			std::string               viewId;
+
+			{
+				std::scoped_lock lock(g_mutex);
+				viewId = FocusHolder();
+				if (viewId.empty()) {
+					return;
+				}
+				handle = g_views[viewId].handle;
+			}
+
+			spdlog::info("WebUIBridge: releasing focus from view '{}' - {}.", viewId, a_reason);
+
+			// The flag is NOT cleared here. It is cleared when the backend
+			// reports the change, like every other transition - clearing it now
+			// would be the mirror-of-intent this module refused, and would go
+			// wrong the moment a backend declines to let go.
+			DispatchToGame([backend, handle]() { backend->ClearFocus(handle); });
+		}
+
+		// Watches for a vanilla menu that pauses the game, and drops focus when
+		// one opens.
+		//
+		// WHY "PAUSES THE GAME" AND NOT A LIST OF MENU NAMES. The obvious
+		// implementation is a hand-written list - InventoryMenu, MapMenu,
+		// Journal Menu, and so on - and it is wrong for the reason a listed path
+		// is always wrong: it silently omits whatever nobody thought of,
+		// including every menu added by a mod. RE::IMenu carries the answer
+		// already. UI_MENU_FLAGS::kPausesGame is set on exactly the menus that
+		// take the player out of the world, and RE::IMenu::PausesGame() reads it.
+		//
+		// WHY NOT ALSO kUsesCursor OR kUsesMenuContext, which sound closer to
+		// "takes input": a web UI overlay is plausibly one of those itself. A
+		// browser that registers as a cursor-using menu would clear its own focus
+		// the moment it opened, and the panel would be dead on arrival with
+		// nothing in the log naming the cause. kPausesGame is the narrow test
+		// that cannot do that, because an overlay panel does not pause Skyrim -
+		// being unpaused is the entire point of one.
+		//
+		// THAT REASONING IS AN ARGUMENT, NOT A MEASUREMENT, and the TESTPLAN
+		// carries it as an item: open the panel with focus and confirm no
+		// release line appears.
+		class MenuWatch : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+		{
+		public:
+			static MenuWatch* GetSingleton()
+			{
+				static MenuWatch singleton;
+				return &singleton;
+			}
+
+			RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent*                a_event,
+				RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
+			{
+				// Nothing here may throw into the UI's dispatch loop.
+				try {
+					if (!a_event || !a_event->opening) {
+						return RE::BSEventNotifyControl::kContinue;
+					}
+
+					auto* ui = RE::UI::GetSingleton();
+					if (!ui) {
+						return RE::BSEventNotifyControl::kContinue;
+					}
+
+					const auto menu = ui->GetMenu(a_event->menuName);
+					if (menu && menu->PausesGame()) {
+						ReleaseFocus("a menu that pauses the game opened");
+					}
+				} catch (...) {
+					spdlog::error("WebUIBridge: the menu watch threw - focus was not released.");
+				}
+
+				return RE::BSEventNotifyControl::kContinue;
+			}
+
+		private:
+			MenuWatch()                            = default;
+			MenuWatch(const MenuWatch&)            = delete;
+			MenuWatch& operator=(const MenuWatch&) = delete;
+		};
+
+		// Whether the menu watch has been installed. Installed at most once, and
+		// never removed: the sink outlives the process and removing it would only
+		// create a window where a menu opens unwatched.
+		bool g_menuWatchInstalled = false;
+
+		void InstallMenuWatch()
+		{
+			if (g_menuWatchInstalled) {
+				return;
+			}
+
+			auto* ui = RE::UI::GetSingleton();
+			if (!ui) {
+				spdlog::error("WebUIBridge: no UI singleton - focus will not be released automatically "
+							  "when a menu opens. The backend's panic chord still works.");
+				return;
+			}
+
+			ui->AddEventSink<RE::MenuOpenCloseEvent>(MenuWatch::GetSingleton());
+			g_menuWatchInstalled = true;
+			spdlog::info("WebUIBridge: watching menu transitions to release view focus.");
+		}
 
 		// --- Natives -------------------------------------------------------------
 		//
@@ -802,6 +980,170 @@ namespace Lodestone::Core::WebUIBridge
 			}
 		}
 
+		// --- Natives added in 1.22.0 ---------------------------------------------
+
+		// Lodestone.WebUIFocusView(String) -> Bool
+		//
+		// Asks for the view to receive the game's mouse and keyboard.
+		//
+		// Returns True when the request was accepted, NOT when the view has
+		// focus - same contract as every other native that mutates a view. Poll
+		// WebUIIsViewFocused, or simply act when it answers True.
+		//
+		// FALSE HAS FOUR MEANINGS AND ALL FOUR ARE SYNCHRONOUS, which is what
+		// makes this worth calling at all on a backend that cannot do it: no
+		// backend, the backend answers false to "view-focus", the view is
+		// unknown or not ready or hidden, or another view already holds focus.
+		//
+		// THE SINGLE-HOLDER RULE IS THIS MODULE'S, NOT THE BACKEND'S. At most one
+		// view created through this bridge holds focus at a time, and the second
+		// asker is refused rather than queued. That is not the same promise as
+		// "focus-stack", which asks whether two could hold it INDEPENDENTLY and
+		// answers false everywhere: here the answer is that they may not, on
+		// purpose, and the refusal is how a consumer finds out.
+		//
+		// The rule is not enforced against consumers that do not come through
+		// this bridge, and cannot be - a backend that arbitrates does that part
+		// itself, and one that does not gives nothing to arbitrate with. That is
+		// among the reasons a backend can answer false to the capability.
+		bool WebUIFocusView(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		{
+			try {
+				auto* backend = Active();
+				if (!backend) {
+					return false;
+				}
+
+				const std::string viewId = ToStd(a_viewId);
+
+				if (!backend->HasCapability(kViewFocusCapability)) {
+					// Logged, because this one is a consumer asking for
+					// something the load order cannot give, and the answer is
+					// otherwise indistinguishable from a bad view id. Not an
+					// error: it is the expected answer on a backend that
+					// declines focus, and the consumer is meant to degrade.
+					spdlog::info("WebUIBridge: '{}' asked for focus and {} does not offer it - refused. "
+								 "Ask WebUIHasCapability(\"view-focus\") first to skip this.",
+						viewId, backend->DisplayName());
+					return false;
+				}
+
+				IWebUIBackend::ViewHandle handle = 0;
+
+				{
+					std::scoped_lock lock(g_mutex);
+
+					const auto it = g_views.find(viewId);
+					if (it == g_views.end() || it->second.handle == 0 || !it->second.domReady ||
+						it->second.hidden) {
+						return false;
+					}
+
+					if (it->second.focused) {
+						// Idempotent, like WebUICreateView: asking for what you
+						// already have is not an error and changes nothing.
+						return true;
+					}
+
+					const std::string holder = FocusHolder();
+					if (!holder.empty()) {
+						spdlog::info("WebUIBridge: '{}' asked for focus while '{}' holds it - refused. "
+									 "One view at a time, by design.",
+							viewId, holder);
+						return false;
+					}
+
+					handle = it->second.handle;
+				}
+
+				// NOTHING IS RESERVED HERE, and the race that leaves is
+				// deliberate. Two consumers asking in the same frame both pass
+				// the check above and both dispatch; the backend decides, and
+				// whichever one wins is the one FocusChanged reports. Reserving
+				// optimistically would mean inventing an undo for the case where
+				// the backend declines, and would put this module's guess ahead
+				// of the backend's arbitration - which is exactly backwards on
+				// the backend that arbitrates better than this module can.
+				DispatchToGame([backend, handle, viewId]() {
+					if (!backend->SetFocus(handle)) {
+						spdlog::warn("WebUIBridge: the backend refused focus for view '{}'.", viewId);
+					}
+				});
+
+				return true;
+			} catch (...) {
+				spdlog::error("WebUIBridge: WebUIFocusView threw.");
+				return false;
+			}
+		}
+
+		// Lodestone.WebUIClearFocus(String) -> Bool
+		//
+		// Gives the mouse and keyboard back to the game.
+		//
+		// TAKES A VIEW ID, AND THE ARGUMENT-LESS VERSION WOULD HAVE BEEN A BUG.
+		// Every native here is reachable by every mod in the load order, so a
+		// bare WebUIClearFocus() would let any consumer drop any other
+		// consumer's focus, from a script that never mentioned it. This clears
+		// focus only when the named view is the one holding it, and answers
+		// False otherwise - which also makes "did I still have it" answerable
+		// without a second call.
+		//
+		// The player's own escape route does not come through here: it is the
+		// backend's panic chord, which no consumer can disable.
+		bool WebUIClearFocus(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		{
+			try {
+				auto* backend = Active();
+				if (!backend) {
+					return false;
+				}
+
+				const std::string         viewId = ToStd(a_viewId);
+				IWebUIBackend::ViewHandle handle = 0;
+
+				{
+					std::scoped_lock lock(g_mutex);
+					const auto       it = g_views.find(viewId);
+					if (it == g_views.end() || !it->second.focused) {
+						return false;
+					}
+					handle = it->second.handle;
+				}
+
+				// Cleared by FocusChanged when the backend reports it, not here.
+				DispatchToGame([backend, handle]() { backend->ClearFocus(handle); });
+				return true;
+			} catch (...) {
+				spdlog::error("WebUIBridge: WebUIClearFocus threw.");
+				return false;
+			}
+		}
+
+		// Lodestone.WebUIIsViewFocused(String) -> Bool
+		//
+		// Whether the view is receiving the mouse and keyboard right now.
+		//
+		// THIS IS THE ONE TO POLL AFTER ASKING, because WebUIFocusView answers
+		// "accepted" and the backend may still decline, and because focus can be
+		// taken away afterwards by things no consumer initiated - a save being
+		// loaded, a menu opening, or the player pressing the panic chord.
+		//
+		// Answered from what the backend last reported observing, so it can lag
+		// a change by a fraction of a second. It cannot be answered by asking the
+		// backend directly: that is a call into it, and every one of those goes
+		// through the main-thread queue, which a native cannot wait on.
+		bool WebUIIsViewFocused(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		{
+			try {
+				std::scoped_lock lock(g_mutex);
+				const auto       it = g_views.find(ToStd(a_viewId));
+				return it != g_views.end() && it->second.focused;
+			} catch (...) {
+				return false;
+			}
+		}
+
 		// Lodestone.WebUIGetListenerSlotsFree() -> Int
 		//
 		// How many listener slots are still free, out of a finite pool shared by
@@ -939,6 +1281,34 @@ namespace Lodestone::Core::WebUIBridge
 		if (a_msg->type == SKSE::MessagingInterface::kInputLoaded) {
 			Resolve();
 		}
+
+		// The menu watch needs the UI singleton, which does not exist at
+		// kInputLoaded. kDataLoaded is the first seam where it does, and it is
+		// still before any consumer can have created a view.
+		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
+			InstallMenuWatch();
+		}
+
+		// THE TWO AUTOMATIC RELEASES THAT A MENU CANNOT COVER.
+		//
+		// kPreLoadGame is a save about to be loaded and kNewGame is the world
+		// being built from nothing. In both the player is leaving whatever they
+		// were looking at, and in both this module's view table survives while
+		// the world under it does not - so a view left holding focus would hold
+		// it into a session where nothing on screen explains why the game is not
+		// listening.
+		//
+		// Cell changes are not listed here and are not forgotten: a load door
+		// opens a menu that pauses the game, so the menu watch above already
+		// covers them. Adding a cell sink would be a second path to the same
+		// release, and a second thing to keep correct.
+		if (a_msg->type == SKSE::MessagingInterface::kPreLoadGame) {
+			ReleaseFocus("a save is being loaded");
+		}
+
+		if (a_msg->type == SKSE::MessagingInterface::kNewGame) {
+			ReleaseFocus("a new game is starting");
+		}
 	}
 
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm)
@@ -963,6 +1333,11 @@ namespace Lodestone::Core::WebUIBridge
 		a_vm->RegisterFunction("WebUIGetViewState", "Lodestone", WebUIGetViewState);
 		a_vm->RegisterFunction("WebUIGetListenerSlotsFree", "Lodestone", WebUIGetListenerSlotsFree);
 
+		// The 1.22.0 additions.
+		a_vm->RegisterFunction("WebUIFocusView", "Lodestone", WebUIFocusView);
+		a_vm->RegisterFunction("WebUIClearFocus", "Lodestone", WebUIClearFocus);
+		a_vm->RegisterFunction("WebUIIsViewFocused", "Lodestone", WebUIIsViewFocused);
+
 		// The 1.17.x surface, deprecated. Removed in 2.0.0, not before.
 		a_vm->RegisterFunction("PrismaAvailable", "Lodestone", PrismaAvailable);
 		a_vm->RegisterFunction("PrismaCreateView", "Lodestone", PrismaCreateView);
@@ -974,7 +1349,7 @@ namespace Lodestone::Core::WebUIBridge
 		a_vm->RegisterFunction("PrismaDestroy", "Lodestone", PrismaDestroy);
 		a_vm->RegisterFunction("PrismaRegisterListener", "Lodestone", PrismaRegisterListener);
 
-		spdlog::info("WebUIBridge: natives registered (22 - 13 current, 9 deprecated).");
+		spdlog::info("WebUIBridge: natives registered (25 - 16 current, 9 deprecated).");
 		return true;
 	}
 }
@@ -982,8 +1357,8 @@ namespace Lodestone::Core::WebUIBridge
 // --- The way back in from a backend ------------------------------------------
 //
 // Defined outside the anonymous namespace above because a backend calls them,
-// and declared in WebUIBackend.h. They are the only two entry points a backend
-// has into the coordinator.
+// and declared in WebUIBackend.h. They are the only three entry points a
+// backend has into the coordinator.
 //
 // WRAPPING IS THE BACKEND'S DUTY, NOT THEIRS. Both of these are called from a
 // vendor's thread and return into vendor code, so the try/catch that keeps an
@@ -1038,5 +1413,43 @@ namespace Lodestone::Core::WebUIBackendCallbacks
 
 		spdlog::debug("WebUIBridge: view '{}' fired slot {} -> mod event '{}'.", viewId, a_slot, modEvent);
 		SendModEvent(std::move(modEvent), a_argument ? std::string(a_argument) : std::string());
+	}
+
+	void FocusChanged(IWebUIBackend* a_backend, IWebUIBackend::ViewHandle a_view, bool a_focused)
+	{
+		using namespace Lodestone::Core::WebUIBridge;
+
+		std::string viewId;
+
+		{
+			std::scoped_lock lock(g_mutex);
+			for (auto& entry : g_views) {
+				if (entry.second.backend == a_backend && entry.second.handle == a_view) {
+					// Edge-triggered. A backend that observes by polling calls
+					// this on every pass, so the level would be a log line ten
+					// times a second for as long as a panel is open.
+					if (entry.second.focused == a_focused) {
+						return;
+					}
+					entry.second.focused = a_focused;
+					viewId               = entry.first;
+					break;
+				}
+			}
+		}
+
+		if (viewId.empty()) {
+			// A view this module did not create, or one destroyed between the
+			// backend's observation and this lock. Not warned about, unlike
+			// ViewReady's equivalent: a view being destroyed while it holds
+			// focus produces exactly this and is ordinary.
+			return;
+		}
+
+		// info rather than debug, ON PURPOSE, because release builds drop debug
+		// and this is the one line that explains a panel that stopped taking
+		// input. It is edge-triggered and a player opens a panel a few times an
+		// hour, so it cannot flood.
+		spdlog::info("WebUIBridge: view '{}' {} focus.", viewId, a_focused ? "took" : "lost");
 	}
 }
