@@ -1118,6 +1118,22 @@ Int Function WebUIGetListenerSlotsFree() global native
 ; the backend's, and it is not the same promise as "focus-stack" - see
 ; WebUIHasCapability.
 ;
+; THAT RULE STOPS AT THE BRIDGE. On Meridian UI, taking focus DEPOSES whichever
+; Meridian UI browser held it, including browsers that belong to mods which never
+; heard of Lodestone: the backend keeps one owner across all of its consumers,
+; and the call this bridge makes is the one that claims rather than waits. The
+; reverse is covered - if another mod takes focus from your view, the bridge
+; observes it and WebUIIsViewFocused turns False, a fraction of a second later.
+;
+; AND IT DOES NOT REACH PRISMA UI AT ALL. If another mod has a Prisma UI panel
+; focused when your view takes focus on Meridian UI, both frameworks hold input
+; at once and keys reach both. That was measured in game, with Meridian UI
+; claiming focus over a focused Prisma UI panel: the two frameworks do not
+; negotiate focus with each other, and the Prisma UI side never lets go. The
+; panic chord below releases only the Meridian UI side. Nothing in this bridge
+; can prevent it, so if your panel can open while another mod's Prisma UI panel
+; has focus, plan for that.
+;
 ; FOCUS IS TAKEN AWAY BEHIND YOUR BACK, ON PURPOSE. Lodestone releases it when a
 ; save is loaded, when a new game starts, and when any menu that pauses the game
 ; opens. The player can also drop it at any moment with the backend's own panic
