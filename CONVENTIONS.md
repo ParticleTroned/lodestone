@@ -141,6 +141,38 @@ If another plugin hooks the same function, the "original" a thunk calls may be t
 
 ---
 
+## Scope of a change
+
+These two came from outside this tree: rules 2 and 3 of
+`multica-ai/andrej-karpathy-skills`, distilled from Andrej Karpathy's notes on
+coding agents (2026-01-26), adopted by the author on 2026-09-13. The other two
+rules of that set were left out - this tree already covers them, and "iterate
+until it passes" contradicts the stop rule in section 10 of the tree's
+`CLAUDE.md`.
+
+### Write the least code that solves what was asked.
+
+No abstraction for a single use, no configuration option, no alternate mode, no
+parameter "for later", no error handling for a case that cannot happen - unless
+someone asked for it. The phase scope decides *what* gets built; this rule is
+about the excess *inside* what gets built, which the scope does not reach.
+
+Test: if the same behavior fits in a quarter of the lines, rewrite it before
+handing it over. It is the same instinct as "do not leave code lying around in
+advance of a need" under Comments, applied to live code instead of no-ops.
+
+### Every changed line traces back to the request.
+
+- Do not reformat, rename, rewrite comments or "improve" adjacent code that works. Match the file's existing style, even where you would write it differently.
+- Dead code that **already existed** gets mentioned in the report, not deleted in passing.
+- What **your own change** left unused - an include, a variable, a helper - goes away in the same change.
+
+This does not conflict with "code that was removed on purpose gets a note" under Comments. That one is about implemented behavior someone decided to remove; this one is about the leftovers of the change you just made, which were never anyone's behavior.
+
+A reformatted diff hides the one line that matters, and in a hook or a native that one line is what the next reader has to judge safe.
+
+---
+
 ## Comments
 
 ### Document why, with evidence.
