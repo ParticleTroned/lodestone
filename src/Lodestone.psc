@@ -260,6 +260,41 @@ Bool Function RegisterMagicDurationChannel(GlobalVariable akMultiplier, GlobalVa
 ; cheaper.
 Bool Function RegisterMagicCostChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
 
+; --- Magic effect description (added in DLL 1.24.0) -------------------------
+;
+; Requires Lodestone.GetVersion() >= 1024000 (1.24.0).
+;
+; Returns a MagicEffect's description - the text the vanilla magic menu shows
+; for a spell - RAW, exactly as the engine keeps it. Markers such as <mag> and
+; <dur> are left in the text: SUBSTITUTING THEM IS YOUR JOB. You hold the
+; numbers, and Lodestone does not reimplement the menu's formatting.
+;
+; "" IS A NORMAL ANSWER, NOT AN ERROR, and you will get it often. It comes back
+; for None, for an effect with no description - close to half of all vanilla
+; effects have none - and for a description made only of whitespace, which
+; vanilla ships twice and which means "no description" on a card. Handle it
+; per effect: one spell can mix effects that have text with effects that do not.
+;
+; WHAT THE TEXT LOOKS LIKE, measured on a development load order before this
+; function was written:
+;
+;   - It is already in the game's language. The engine keeps resolved text for
+;     localized plugins too: Skyrim.esm's Firebolt effect came back as the
+;     sentence, not as a string-table id.
+;   - <mag> and <dur> are the markers to substitute. MATCH THEM WITHOUT CASE -
+;     one vanilla effect writes <MAG>.
+;   - <area> DOES NOT APPEAR. Not in vanilla, and not in any of the 5766
+;     effects of the measured load order. Do not build on it.
+;   - Everything else between < and > is yours to decide. Vanilla uses numeric
+;     literals such as <50> and <25>, and <Global=Name> in three DLC effects;
+;     mods also wrap plain words in brackets (<Chaurus>, <20%>). 75 distinct
+;     markers were counted. How the vanilla menu displays those was NOT
+;     measured; showing what is inside the brackets is a reasonable default,
+;     not a verified one.
+;   - Apart from the whitespace-only case, the text is returned untouched,
+;     including any leading or trailing whitespace.
+String Function GetEffectDescription(MagicEffect akEffect) global native
+
 ; --- Detection scaling channel (added in DLL 1.9.0) -----------------------
 ;
 ; Scales a detection-related value you compute yourself, the same shape as the

@@ -12,6 +12,7 @@
 #include "ChannelInfo.h"
 #include "Detection.h"
 #include "DetectionRead.h"
+#include "EffectDescription.h"
 #include "EquipVeto.h"
 #include "Incapacitation.h"
 #include "MagicScaling.h"
@@ -44,6 +45,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= Incapacitation::RegisterFuncs(a_vm); // Hook A - managed knockout
 		ok &= EquipVeto::RegisterFuncs(a_vm);      // 1.16.0 - equip veto
 		ok &= WebUIBridge::RegisterFuncs(a_vm);     // 1.17.0 - web UI bridge
+		ok &= EffectDescription::RegisterFuncs(a_vm); // L-F2 - magic effect description
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");
