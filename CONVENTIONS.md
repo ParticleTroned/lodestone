@@ -70,6 +70,7 @@ layer.
 - **Errors are reported by return value, never by throwing.** Sentinels: `Int -> -1`, `String -> "" (empty)`, `Bool -> false`.
 - **The sentinel is documented in the `.psc`**, which is the contract Papyrus reads, and in a comment on the native itself stating what it returns and when it fails.
 - **Every public native gets a comment** stating what it returns and when it fails, including "cannot fail" when that is the case.
+- **A native that reads many forms takes the whole array in one call.** A native registered without `a_callableFromTasklets` - the CommonLib default - waits for the main thread, about one frame per call, so a Papyrus loop reading one value per form pays one frame per form. Take `std::vector<RE::SpellItem*>` and return `std::vector<std::string>` or `std::vector<std::int32_t>` of the same length: a None array arrives empty, a None element arrives as `nullptr` in place, and the result carries the sentinel in that position. Batching only helps when the per-element read waits - a read that is already `NoWait` gains nothing. Evidence: `_Steward\Conhecimento\native-papyrus-em-lote-custa-um-quadro-por-chamada.md`; reference code: `lodestone-extracted/src/Core/SpellRead.cpp`.
 
 ---
 
