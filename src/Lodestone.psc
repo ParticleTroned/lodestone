@@ -295,6 +295,47 @@ Bool Function RegisterMagicCostChannel(GlobalVariable akMultiplier, GlobalVariab
 ;     including any leading or trailing whitespace.
 String Function GetEffectDescription(MagicEffect akEffect) global native
 
+; --- Spell batch readers (added in DLL 1.25.0) ------------------------------
+;
+; Requires Lodestone.GetVersion() >= 1025000 (1.25.0).
+;
+; Three readers that take an array of spells and hand back an array of THE SAME
+; LENGTH, one answer per position: element i of the result belongs to element i
+; of akSpells. Pass the array you already have - PO3's
+; GetAllActorPlayableSpells, or your own - and filter on the results yourself.
+;
+; WHY THEY EXIST: reading these values one spell at a time costs about one frame
+; per call, because MagicEffect.GetAssociatedSkill and Form.GetName wait for the
+; game's main thread. Each function here is ONE call for the whole array - about
+; one frame, however many spells you pass.
+;
+; WHICH EFFECT: school and level come from the spell's COSTLIEST effect, and both
+; from the same one. That is what the vanilla magic menu shows. IF YOUR SCRIPT
+; READS EFFECT 0 TODAY, THE ANSWER CAN CHANGE for a spell with several effects
+; whose costliest is not the first. For a single-effect spell it is the same
+; effect.
+;
+; NONE AND EMPTY SPELLS: a None position gives "" (school, name) or -1 (level)
+; in that same position. A spell with no effects gives "" and -1 for school and
+; level; its name is still returned. A None array gives back an empty array.
+;
+; ARRAY SIZE: Lodestone imposes no limit of its own. Arrays above 128 elements
+; were not measured.
+
+; The school of each spell's costliest effect, as the engine names the skill:
+; "Alteration", "Conjuration", "Destruction", "Illusion", "Restoration". An
+; effect with no associated skill gives "". Meant to be the exact text
+; MagicEffect.GetAssociatedSkill() returns for that effect.
+String[] Function GetSpellSchools(Spell[] akSpells) global native
+
+; The minimum skill level of each spell's costliest effect - the value
+; MagicEffect.GetSkillLevel() returns for that effect (0, 25, 50, 75 or 100 on
+; vanilla spells).
+Int[] Function GetSpellSkillLevels(Spell[] akSpells) global native
+
+; The display name of each spell, "" when it has none.
+String[] Function GetSpellNames(Spell[] akSpells) global native
+
 ; --- Detection scaling channel (added in DLL 1.9.0) -----------------------
 ;
 ; Scales a detection-related value you compute yourself, the same shape as the

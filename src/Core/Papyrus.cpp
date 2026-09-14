@@ -17,6 +17,7 @@
 #include "Incapacitation.h"
 #include "MagicScaling.h"
 #include "PluginInfo.h"
+#include "SpellRead.h"
 #include "SpellTomes.h"
 #include "WebUIBridge.h"
 
@@ -46,6 +47,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= EquipVeto::RegisterFuncs(a_vm);      // 1.16.0 - equip veto
 		ok &= WebUIBridge::RegisterFuncs(a_vm);     // 1.17.0 - web UI bridge
 		ok &= EffectDescription::RegisterFuncs(a_vm); // L-F2 - magic effect description
+		ok &= SpellRead::RegisterFuncs(a_vm);         // L-F3 - spell batch readers
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");
