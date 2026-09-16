@@ -27,6 +27,7 @@ Currently implemented. Every module is Core - it never knows a consumer by name.
 | MagicScaling | 1.4.0 (magnitude moved to the perk entry seam in 1.7.0 - now shows in the spell menu, and no longer touches enchantments, food or potions; multi-contributor since 1.9.0) | `RegisterMagicMagnitudeChannel()`, `RegisterMagicDurationChannel()`, `RegisterMagicCostChannel()` |
 | EffectDescription | 1.24.0 | `GetEffectDescription()` - a MagicEffect's description text, raw: `<mag>` and `<dur>` are left for the caller to substitute, and `""` is an ordinary answer (no text, or only whitespace). Read-only; no hook, no state |
 | SpellRead | 1.25.0 | `GetSpellSchools()`, `GetSpellSkillLevels()`, `GetSpellNames()` - batch readers: a `Spell[]` in, a parallel array out, one call for the whole array instead of one per spell. School and level come from the costliest effect. Read-only; no hook, no state |
+| MenuPrompt | 1.26.0 | `MenuPromptAvailable()`, `MenuPromptBusy()`, `MenuPromptList()`, `MenuPromptText()`, `MenuPromptTakeText()` - asks the player a question on screen and hands the answer back: pick one of N texts, or type a line. **The two prompts wait**: the calling script stops until the player answers, like the menus they replace, and the game is paused while one is open. Three outcomes are kept apart - an answer (`0` and up), a cancellation (`-1`: Escape, Cancel, or a load taking the prompt away) and a refusal (`-2`: nothing was shown) - and an empty line is an answer, which is why text comes back as a ticket for `MenuPromptTakeText()` rather than as a String. One prompt at a time across the load order; a second request is refused, not queued. No entry ceiling in this surface; lists are drawn through a clipper. Needs [SKSE Menu Framework](https://www.nexusmods.com/skyrimspecialedition/mods/120352) installed, and the module is inert and silent without it. **It is not a dependency of Lodestone:** it is detected at runtime, `MenuPromptAvailable()` answers `False` without it, and nothing is written to the log. A consumer that builds a flow on these prompts inherits that framework's requirements, not Lodestone. Gate on `>= 1026000` |
 | Detection | 1.9.0 | `RegisterDetectionMultiplierChannel()` |
 | DetectionRead | 1.14.0 (keyword filtering added in 1.15.0; candidate and scale corrections in 1.15.1) | `GetHighestDetectionLevel()`, `GetDetectionObserverCount()`, `GetHighestDetectionLevelExcluding()`, `GetDetectionObserverCountExcluding()` |
 | ChannelInfo | 1.9.0 | `GetChannelContributorCount()`, `GetChannelContributorPlugin()` |
@@ -191,6 +192,12 @@ The WebUI bridge compiles against the API headers of both backends it supports, 
 
 Neither backend has to be installed to build, and neither ships with the DLL - both are compile-time interfaces, detected at runtime.
 
+The menu prompt module compiles against one more third-party header, and it is kept out for a different reason again:
+
+- `extern/skse-menu-framework/SKSEMenuFramework.h` **is not in the repository**, and has to be copied in by hand. Its license is LGPL-2.1, which this repository could carry; it stays out because it is a single large file its author distributes separately and revises on their own schedule, so vendoring it would fork it. The README in that folder says where to get it, which copy this build used, and how it was checked against the installed framework.
+
+The same rule applies: SKSE Menu Framework does not have to be installed to build, and does not ship with the DLL.
+
 ```
 cmake --preset <preset>
 cmake --build build --config Release
@@ -232,4 +239,4 @@ This was MIT until 2026-09-05. The DLL links CommonLibSSE-NG statically, and the
 
 You are free to use, modify and redistribute this under the GPL, including inside your own mod's requirements. If you build something on it, a link back is appreciated but not required.
 
-The one third-party file the build needs, the Prisma UI API header, is not in this repository - see Building above. CommonLibSSE-NG is a submodule under its own license. Everything else tracked here is the author's, and the grant above covers all of it.
+The two third-party files the build needs, the Prisma UI API header and the SKSE Menu Framework client header, are not in this repository - see Building above. CommonLibSSE-NG is a submodule under its own license. Everything else tracked here is the author's, and the grant above covers all of it.

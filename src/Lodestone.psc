@@ -1297,6 +1297,120 @@ Bool Function WebUIClearFocus(String asViewId) global native
 ; is present.
 Bool Function WebUIIsViewFocused(String asViewId) global native
 
+; --- Menu prompts (added in DLL 1.26.0) ---------------------------------------
+;
+; Asks the player a question on screen and hands the answer back to your script.
+; Two questions, which are the two a consumer actually needs: pick one of N
+; texts, and type a line of text.
+;
+; THESE TWO CALLS WAIT. The script that calls MenuPromptList or MenuPromptText
+; stops there until the player answers, exactly like the menus you may be
+; replacing. The game is PAUSED while a prompt is open.
+;
+; A REQUIREMENT YOU INHERIT, WHICH LODESTONE DOES NOT HAVE. The menus are drawn
+; by SKSE Menu Framework (Nexus mod 120352), which Lodestone does not depend on
+; and does not install.
+; Without it every function here answers its sentinel, nothing is written to the
+; log as a failure, and your mod keeps working - but it shows no prompt. If you
+; ship a flow that needs one, then YOUR mod depends on that framework and on
+; what it requires in turn (Address Library and SSE Engine Fixes), and your mod
+; page is where that has to be written. Ask MenuPromptAvailable and keep
+; whatever you do today as the fallback.
+;
+; THE ORDER THAT WORKS:
+;   1. MenuPromptAvailable()        - if False, no prompt can be shown. Use your
+;                                     own fallback and stop
+;   2. MenuPromptList(...)          - or MenuPromptText(...). Your script stops
+;                                     here until the player is done
+;   3. read the returned Int        - see the three outcomes below
+;   4. for text only, and ONLY when the return is 1 or greater:
+;      MenuPromptTakeText(iReturn)  - takes the typed line, once
+;
+; THREE OUTCOMES, AND THEY ARE DISTINCT ON PURPOSE:
+;
+;   -2  REFUSED. Nothing was shown at all. Either no framework is present, or
+;       another prompt was already open, or the list had no entries. Nobody saw
+;       anything, so do not treat it as a decision by the player
+;   -1  CANCELLED. The player dismissed the prompt with Escape or Cancel, or a
+;       save was loaded and took it away
+;    0  and above - an ANSWER. For a list it is the index into the array you
+;       passed. For text it is a ticket, and MenuPromptTakeText turns it into
+;       the line the player typed
+;
+; AN EMPTY LINE IS AN ANSWER, NOT A CANCELLATION, and that is the whole reason
+; text answers come back as a ticket instead of as a String. If the player
+; clears the box and accepts, MenuPromptText returns a ticket and
+; MenuPromptTakeText returns "". A single String return could not tell that from
+; a cancellation, which is why flows built on the older surface treat empty as
+; cancel - they had no other signal. You do.
+;
+; ONE PROMPT AT A TIME, ACROSS THE WHOLE LOAD ORDER. A second request while one
+; is open is REFUSED rather than queued, because a queue makes a script wait on
+; a window the player never asked for and cannot see. Refused is -2, and it is
+; not cancellation: the player made no choice.
+;
+; A LOAD TAKES THE PROMPT AWAY. Loading a save or starting a new game closes an
+; open prompt and hands the waiting script -1. A script waiting on a window that
+; belongs to a world which no longer exists is the state this avoids.
+;
+; NO 128 ENTRY CEILING IN THIS SURFACE, and the list is drawn through a clipper,
+; so 300 entries cost what 30 do. Long entries widen the window up to most of
+; the screen instead of being cut. BUT PAPYRUS ITSELF IS THE OTHER HALF OF THAT
+; QUESTION: the array literal "new String[N]" stops at 128 in the language, and
+; whether an array built past that by other means survives the trip into a
+; native is NOT MEASURED. If you go above 128, measure it.
+;
+; Gate on GetVersion() >= 1026000.
+
+; Whether a prompt can be shown at all.
+;
+; A probe, not a failure: False is the expected answer on a load order without
+; the menu framework, and it writes nothing to the log. ASK THIS FIRST, and keep
+; your existing path for the False case. Cannot fail.
+Bool Function MenuPromptAvailable() global native
+
+; Whether a prompt is open right now, anywhere in the load order. A call to
+; MenuPromptList or MenuPromptText would be refused.
+;
+; You do not need this to use the two prompts - they answer -2 when refused, and
+; checking first cannot remove the race. It is here for a script that wants to
+; avoid asking at all while the player is busy. Returns False when no prompt can
+; be shown at all.
+Bool Function MenuPromptBusy() global native
+
+; Shows a single-choice list titled asTitle and WAITS for the player.
+;
+; Returns the index into asEntries that the player picked, -1 if it was
+; cancelled, or -2 if nothing was shown. The title is yours to write and there
+; is no entry limit in this surface - read the notes above.
+;
+; An empty asEntries is refused (-2) rather than shown as an empty window.
+Int Function MenuPromptList(String asTitle, String[] asEntries) global native
+
+; Shows a text box titled asTitle, seeded with asSuggestion and SELECTED, so
+; that typing replaces it and Enter alone accepts it unchanged. WAITS for the
+; player.
+;
+; Returns a TICKET of 1 or more when the player accepted, -1 if cancelled, or -2
+; if nothing was shown. The ticket is not the text: hand it to
+; MenuPromptTakeText to get the line.
+;
+; The box holds 512 BYTES, and text comes back as UTF-8, so an accented letter
+; costs more than one. A longer suggestion is truncated at a character boundary.
+Int Function MenuPromptText(String asTitle, String asSuggestion) global native
+
+; Takes the line the player typed, for a ticket MenuPromptText returned.
+;
+; ONCE PER TICKET. The text is handed over and forgotten, so a second call with
+; the same ticket returns "". Take it as soon as the call returns: only the last
+; few answers are kept, and an older one is dropped when they are.
+;
+; Returns "" for a ticket that was already taken, for a made-up number, and for
+; the -1 and -2 returns - which is why you only call this when the return was 1
+; or more. An empty String from a VALID ticket means the player accepted an
+; empty line, and that is an answer.
+String Function MenuPromptTakeText(Int aiTicket) global native
+
 ;--------------------------------------------------------------
 ; DEPRECATED - the 1.17.x names
 ;--------------------------------------------------------------

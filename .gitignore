@@ -20,3 +20,12 @@ CMakeSettings.json
 # extern/prismaui-api/ e a secao Building do README. So compilacao; a DLL
 # distribuida nao carrega nada dele.
 extern/prismaui-api/PrismaUI_API.h
+
+# Header do cliente do SKSE Menu Framework. Tambem e de terceiro, mas o motivo
+# de ficar fora NAO e o mesmo do de cima: a licenca dele e LGPL-2.1 e este
+# repositorio poderia carrega-la. Ele fica fora porque e um arquivo de 530 KB
+# que o proprio autor distribui a parte e atualiza no proprio ritmo - vendorizar
+# seria bifurcar. Quem compila copia o arquivo para ca; ver o README de
+# extern/skse-menu-framework/. So compilacao; a DLL distribuida nao carrega
+# nada dele.
+extern/skse-menu-framework/SKSEMenuFramework.h

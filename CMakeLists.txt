@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.25.0
+    VERSION 1.26.1
     LANGUAGES CXX
 )
 
@@ -112,6 +112,7 @@ add_commonlibsse_plugin(
         src/Core/PrismaUIBackend.cpp
         src/Core/MeridianUIBackend.cpp
         src/Core/EquipVeto.cpp
+        src/Core/MenuPrompt.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
@@ -130,10 +131,10 @@ target_compile_options(${PROJECT_NAME} PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8
 target_link_libraries(${PROJECT_NAME} PRIVATE safetyhook::safetyhook)
 
 # Where the generated Version.h is found by #include "Version.h", and where the
-# two web UI backends' API headers are found.
+# third-party API headers are found.
 #
-# The two are NOT tracked the same way, and the difference is licensing, not
-# preference:
+# They are NOT tracked the same way, and the reason differs per header - it is
+# not preference:
 #
 #   extern/prismaui-api/     NOT tracked. The Prisma UI License is proprietary
 #                            and source-available, and adds restrictions this
@@ -143,13 +144,29 @@ target_link_libraries(${PROJECT_NAME} PRIVATE safetyhook::safetyhook)
 #   extern/meridianui-api/   TRACKED. Meridian UI's API headers are plain MIT,
 #                            which adds no restriction, so they are vendored
 #                            with their LICENSE-MIT alongside.
+#   extern/skse-menu-framework/  NOT tracked, and NOT for Prisma UI's reason.
+#                            The SKSE Menu Framework client header is LGPL-2.1
+#                            (QTR-Modding/SKSE-Menu-Framework-3-API), which this
+#                            repository could carry. It stays out because it is
+#                            one 530 KB third-party file that its own author
+#                            distributes separately and revises on their own
+#                            schedule - vendoring it would fork it. Copy it in
+#                            by hand; that folder's README says from where.
 #
-# Neither backend is a dependency: both are detected at runtime and the bridge
-# falls through to sentinels when neither is installed.
+# NONE of the three is a dependency. The two web UI backends are detected at
+# runtime and the bridge falls through to sentinels when neither is installed;
+# the menu framework is detected the same way, by its own module.
+#
+# ORDER MATTERS FOR THE MENU FRAMEWORK HEADER, and it is not this list that
+# fixes it: that header names RE::InputEvent and calls std::filesystem without
+# including either, so it only parses after CommonLibSSE has been seen. PCH.h
+# is force-included everywhere, which is what satisfies it - do not include
+# that header from a file that somehow bypasses the PCH.
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/prismaui-api"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/meridianui-api"
+    "${CMAKE_CURRENT_SOURCE_DIR}/extern/skse-menu-framework"
 )
 
 # PCH.h is mandatory for CommonLibSSE-NG. Force-included in every file of the

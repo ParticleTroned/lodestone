@@ -49,6 +49,7 @@
 #include "Core/Incapacitation.h"
 #include "Core/Log.h"
 #include "Core/MagicScaling.h"
+#include "Core/MenuPrompt.h"
 #include "Core/Papyrus.h"
 #include "Core/Serialization.h"
 #include "Core/SpellTomes.h"
@@ -90,6 +91,12 @@ namespace
 		// of one vendor's handshake in the wrong file.
 		Lodestone::Core::WebUIBridge::HandleSKSEMessage(a_msg);
 
+		// MenuPrompt wants two of these seams and filters them itself, for the
+		// same reason: a save being loaded or a new game starting has to close
+		// an open prompt and hand the waiting script a cancellation. Which
+		// messages those are is the module's business, not this file's.
+		Lodestone::Core::MenuPrompt::HandleSKSEMessage(a_msg);
+
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();
 			Lodestone::Core::BookFramework::Install();
@@ -108,6 +115,12 @@ namespace
 			// through TESDataHandler, which does need data loaded. Same seam,
 			// different reason from the four above.
 			Lodestone::Core::EquipVeto::Install();
+
+			// MenuPrompt registers its two windows with the menu framework
+			// here. Not a hook at all - the seam is shared because the
+			// framework's DLL is reliably loaded by this point, which is what
+			// its own consumers rely on.
+			Lodestone::Core::MenuPrompt::Install();
 		}
 	}
 }
