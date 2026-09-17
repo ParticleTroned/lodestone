@@ -907,7 +907,8 @@ Int Function GetEquipBlockCount() global native
 ; THERE IS A FOCUS SURFACE SINCE 1.22.0, AND IT ANSWERS DIFFERENTLY PER BACKEND.
 ; WebUIFocusView, WebUIClearFocus and WebUIIsViewFocused give one view the mouse
 ; and keyboard. ASK WebUIHasCapability("view-focus") FIRST: it is True on Meridian
-; UI and False on Prisma UI, and the reason is written at those functions.
+; UI, True on Prisma UI since 1.27.0 and False there before it, and False with no
+; backend. What focus costs on each backend is written at those functions.
 ;
 ; DO NOT ASK "focus-stack" TO FIND THIS OUT. It answers False on both backends,
 ; before AND after 1.22.0, and it is a different question:
