@@ -43,17 +43,36 @@
 // the reason magnitude's was. Moving it to the same seam is additive and is not
 // done yet.
 //
-// SCOPE - ORDINARY SPELLS ONLY. Not abilities, not enchantments, not powers, not
-// food, not potions. A consumer asking to scale "spell magnitude" does not mean
-// those, and the trace that found these seams caught armour enchantments at
-// magnitude 25 and a quest ability at 300 coming through the same path.
+// SCOPE - ORDINARY SPELLS WITH A SCHOOL. A spell is in scope when its type is
+// Spell AND its costliest effect has a magic school (associated skill is not
+// None). Not abilities, not enchantments, not powers, not food, not potions. A
+// consumer asking to scale "spell magnitude" does not mean those, and the trace
+// that found these seams caught armour enchantments at magnitude 25 and a quest
+// ability at 300 coming through the same path.
 //
-// The two channels enforce this in different places, because they sit in
-// different seams. Duration tests the effect's source directly at
-// AdjustForPerks. Magnitude cannot - ForEachPerkEntry is handed an entry point
-// and a visitor, with no spell in sight - so the test moved into
-// CheckConditionFilters, which does receive the entry point's arguments and
-// therefore the spell. Anything unreadable there answers "does not apply".
+// NARROWED IN 1.28.0. Through 1.27.x the test was the spell type alone, and a
+// Spell-type record with no school was scaled like a Firebolt. Those are mod
+// machinery rather than magic - a buff, a marker or a cooldown timer another mod
+// casts from Papyrus with the player as the source - and scaling them stretched
+// timers that were never the player's magic: Strength Matters' 60 second
+// Workout lasted about 103 seconds under a high attribute. The price, accepted
+// by decision: a script-cast sub-spell or proc with no school of its own stops
+// scaling, while the spell that casts it still scales.
+//
+// Why the COSTLIEST effect: it is where the magic menu takes a spell's school
+// from, and the one school the player ever sees for it. SpellRead reads school
+// through the same effect (measured 123 of 123 against SKSE in L-F3). One test,
+// on the spell, for all three channels - so a two-effect spell never has its
+// cost scaled while half its duration is not.
+//
+// The channels enforce this in different places, because they sit in different
+// seams. Duration tests the effect's source spell at AdjustForPerks, and cost
+// tests the spell at CalculateCost. Magnitude cannot - ForEachPerkEntry is
+// handed an entry point and a visitor, with no spell in sight - so the test
+// moved into CheckConditionFilters, which does receive the entry point's
+// arguments and therefore the spell. Anything unreadable there answers "does
+// not apply". A spell with no effects, or whose costliest effect has no base
+// effect, is out of scope too.
 //
 // Narrow is the recoverable direction: widening later is additive, whereas
 // shipping wide would silently rescale every enchantment in the load order and

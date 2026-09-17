@@ -235,6 +235,16 @@ Bool Function ConsumeSpellTome(Book akBook, ObjectReference akActor) global nati
 ; Player only. Only values that already exist are scaled: an effect with no
 ; magnitude keeps none, and a spell that costs nothing keeps costing nothing.
 ;
+; NARROWED IN DLL 1.28.0: a spell is in scope only when its type is Spell AND
+; its costliest effect has a magic school (an associated skill on the base
+; effect). The same test applies to all three channels. A Spell-type record with
+; no school is mod machinery, not magic - a buff, marker or cooldown timer cast
+; from a script with the player as the source - and through 1.27.x it was scaled
+; like any spell, stretching timers that were never the player's magic. A
+; script-cast sub-spell or proc with no school of its own no longer scales; the
+; spell that casts it still does. If you cast such a spell and WANT it scaled,
+; give its costliest effect a school.
+;
 ; Registration is session-scoped (not saved) - re-register after each load.
 ;
 ; MULTI-CONTRIBUTOR (DLL 1.9.0+), per quantity: every distinct plugin that

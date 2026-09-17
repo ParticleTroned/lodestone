@@ -165,6 +165,54 @@ namespace Lodestone::Core::MagicScaling
 			return a_item && a_item->GetSpellType() == RE::MagicSystem::SpellType::kSpell;
 		}
 
+		// THE scope test, the one all three channels ask since 1.28.0: an
+		// ordinary spell whose costliest effect has a magic school. See the SCOPE
+		// note in the header for why script-cast spells with no school are out.
+		//
+		// The school is read the way SpellRead.cpp (CostliestBaseEffect) reads
+		// it - costliest effect, then its base effect - which is where the magic
+		// menu takes a spell's school from, measured 123 of 123 against SKSE in
+		// L-F3. The rule is copied here rather than the helper moved: that one
+		// lives in SpellRead's anonymous namespace.
+		//
+		// Callers test the channel and the player first, so whatever reaches the
+		// school test is already the player's spell. The debug line is written
+		// ONLY when this test is what excludes. Without it an excluded spell just
+		// vanishes from the log, which reads exactly like the thunk never having
+		// run. The earlier filters stay silent on purpose: AdjustForPerks fires
+		// for every controller ability in the load order, and logging those would
+		// drown this line.
+		bool IsInScope(RE::MagicItem* a_item, const char* a_channel)
+		{
+			if (!IsOrdinarySpell(a_item)) {
+				return false;
+			}
+
+			const char* reason = nullptr;
+			if (a_item->effects.empty()) {
+				reason = "has no effects";
+			} else {
+				const RE::Effect* costliest = a_item->GetCostliestEffectItem();
+				if (!costliest || !costliest->baseEffect) {
+					reason = "costliest effect has no base effect";
+				} else if (costliest->baseEffect->GetMagickSkill() == RE::ActorValue::kNone) {
+					reason = "costliest effect has no school";
+				} else {
+					return true;
+				}
+			}
+
+			if (ShouldLogEvents()) {
+				spdlog::debug("MagicScaling: '{}' (0x{:08X}) out of scope: {} [{}]",
+					a_item->GetName() ? a_item->GetName() : "<unnamed>",
+					a_item->GetFormID(),
+					reason,
+					a_channel);
+			}
+
+			return false;
+		}
+
 		// -------------------------------------------------------------------
 		// Originals for AdjustForPerks, keyed by vtable address
 		//
@@ -280,9 +328,12 @@ namespace Lodestone::Core::MagicScaling
 					return;
 				}
 
-				// 3. Ordinary spells only. This is what keeps armour enchantments
-				//    and quest abilities out of a consumer's spell scaling.
-				if (!IsOrdinarySpell(a_this->spell)) {
+				// 3. In scope only - an ordinary spell whose costliest effect has
+				//    a school. This is what keeps armour enchantments, quest
+				//    abilities and script-cast mod machinery out of a consumer's
+				//    spell scaling. Tested on the SPELL, not on this effect, so
+				//    every effect of one spell gets the same answer.
+				if (!IsInScope(a_this->spell, "dur")) {
 					return;
 				}
 
@@ -528,7 +579,7 @@ namespace Lodestone::Core::MagicScaling
 			}
 
 			auto* item = reinterpret_cast<RE::TESForm*>(raw)->As<RE::MagicItem>();
-			return IsOrdinarySpell(item);
+			return IsInScope(item, "mag");
 		}
 
 		bool CheckConditionFiltersThunk(RE::BGSEntryPointPerkEntry* a_this, std::uint32_t a_numArgs, void* a_args)
@@ -540,7 +591,14 @@ namespace Lodestone::Core::MagicScaling
 			}
 
 			if (a_this && a_this == g_syntheticEntry) {
-				return SyntheticEntryApplies(a_numArgs, a_args);
+				// Wrapped since 1.28.0, when the scope test gained a log line -
+				// the first thing on this path that can throw. An exception
+				// answers "does not apply", the narrow direction.
+				try {
+					return SyntheticEntryApplies(a_numArgs, a_args);
+				} catch (...) {
+					return false;
+				}
 			}
 
 			return reinterpret_cast<decltype(&CheckConditionFiltersThunk)>(original)(a_this, a_numArgs, a_args);
@@ -788,7 +846,7 @@ namespace Lodestone::Core::MagicScaling
 					return cost;
 				}
 
-				if (!IsOrdinarySpell(a_this)) {
+				if (!IsInScope(a_this, "cost")) {
 					return cost;
 				}
 
