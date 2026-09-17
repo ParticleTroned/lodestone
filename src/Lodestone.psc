@@ -245,6 +245,12 @@ Bool Function ConsumeSpellTome(Book akBook, ObjectReference akActor) global nati
 ; spell that casts it still does. If you cast such a spell and WANT it scaled,
 ; give its costliest effect a school.
 ;
+; TO COUNT ON THIS NARROWING, gate on Lodestone.GetVersion() >= 1028000
+; (1.28.0). The three registration functions themselves are older than that
+; and did not change - the line below still says >= 1004000, and it is still
+; right. A mod that only needs a channel gates on that; a mod that needs the
+; helper-spell exclusion to be in effect gates on this one.
+;
 ; Registration is session-scoped (not saved) - re-register after each load.
 ;
 ; MULTI-CONTRIBUTOR (DLL 1.9.0+), per quantity: every distinct plugin that
