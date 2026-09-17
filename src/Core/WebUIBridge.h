@@ -52,17 +52,19 @@
 // consumers of this module degrade to "no panel" and no other part of Lodestone
 // notices.
 //
-// THERE IS A FOCUS SURFACE SINCE 1.22.0, AND IT ANSWERS DIFFERENTLY PER
-// BACKEND. WebUIFocusView, WebUIClearFocus and WebUIIsViewFocused let one view
-// receive the game's mouse and keyboard. A consumer asks whether the installed
-// backend can do it at all with WebUIHasCapability("view-focus") - and asks
-// FIRST, because the honest answer on one of the two is no.
+// THERE IS A FOCUS SURFACE SINCE 1.22.0. WebUIFocusView, WebUIClearFocus and
+// WebUIIsViewFocused let one view receive the game's mouse and keyboard. A
+// consumer asks whether the installed backend can do it at all with
+// WebUIHasCapability("view-focus") - and asks FIRST, because the answer is
+// False with no backend, and was False on Prisma UI from 1.22.0 to 1.26.x.
 //
 // The single-holder rule is this module's: at most one view created through
 // this bridge holds focus at a time, and the second asker is refused rather
 // than queued. Focus is released automatically when a save loads, when a new
 // game starts, and when a menu that pauses the game opens; the player's own
-// escape is the backend's panic chord, which no consumer can disable.
+// escape is the panic chord, which no consumer can disable. On Meridian UI
+// the chord is the backend's; on Prisma UI it is Lodestone's, since 1.27.0 -
+// see PrismaUIBackend.cpp for why the two do not behave alike.
 //
 // "focus-stack" STILL ANSWERS False, AND THAT IS NOT A LEFTOVER. It asks
 // whether TWO views can hold focus INDEPENDENTLY, which no backend here can do
@@ -73,6 +75,8 @@
 // Version gates for consumers:
 //   >= 1018000 (1.18.0)  the WebUI* surface. The 1.17.x names still answer.
 //   >= 1022000 (1.22.0)  the three focus natives and "view-focus".
+//   1.27.0 needs no gate of its own: "view-focus" started answering True on
+//   Prisma UI, and a consumer that already asks sees the change.
 
 #pragma once
 

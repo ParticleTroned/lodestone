@@ -242,7 +242,7 @@ namespace Lodestone::Core
 		// and that is the entire reason this exists rather than the coordinator
 		// simply remembering what it last asked for. Focus moves without the
 		// bridge in at least three ways: a backend that arbitrates hands it to
-		// somebody else, the player presses the backend's own panic chord, and a
+		// somebody else, the player presses the panic chord, and a
 		// view is torn down while holding it. A mirror of intent would go on
 		// claiming a view has focus that the player already escaped, and the
 		// coordinator would then refuse the next consumer forever.

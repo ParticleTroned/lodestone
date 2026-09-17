@@ -1118,13 +1118,16 @@ String Function WebUIGetBackend() global native
 ;   "view-focus"   can ONE view be given the mouse and keyboard
 ;
 ; THE ANSWERS DEPEND ON THE BACKEND, WHICH IS THE ENTIRE POINT OF ASKING HERE
-; RATHER THAN ASKING WHICH BACKEND IT IS. As of 1.22.0:
+; RATHER THAN ASKING WHICH BACKEND IT IS. As of 1.27.0:
 ;
 ;                  Prisma UI   Meridian UI
 ;   focus-stack    False       False
-;   view-focus     False       True
+;   view-focus     True        True
 ;   view-order     True        True
 ;   inspector      True        False
+;
+; From 1.22.0 to 1.26.x, "view-focus" was False on Prisma UI. A consumer that
+; already asked needs no change: the answer grew, and the check starts passing.
 ;
 ; READ THOSE FIRST TWO ROWS TOGETHER, BECAUSE THEY ARE THE TRAP OF THIS WHOLE
 ; SURFACE. They look like the same question and they are not:
@@ -1167,27 +1170,43 @@ Int Function WebUIGetListenerSlotsFree() global native
 ; WebUIHasCapability("view-focus") - the version tells you the functions exist,
 ; the capability tells you whether the installed backend can honour them.
 ;
-; NOT EVERY BACKEND CAN, AND THAT IS THE FIRST THING TO PLAN FOR. Meridian UI
-; can; Prisma UI cannot, and answers False. Write the panel so it degrades to
-; display-only rather than assuming input, because on a large share of load
-; orders that is what it will be.
+; BOTH BACKENDS CAN SINCE 1.27.0. Still ask - with no backend installed the
+; answer is False, and a later backend may answer differently. Write the panel
+; so it degrades to display-only when the answer is False.
 ;
-; WHY PRISMA UI ANSWERS False, since it does have Focus and Unfocus of its own:
+; FROM 1.22.0 TO 1.26.x PRISMA UI ANSWERED False, for three reasons. The third
+; is what 1.27.0 changed; the first two are still true, and they are now yours
+; to weigh rather than Lodestone's to decide:
 ;
-;   1. Its input capture is per PROCESS, not per view. Focusing one view takes
+;   1. Its input capture is per PROCESS, not per view. Focusing your view takes
 ;      the keyboard from every other Prisma panel in the game, including panels
 ;      belonging to mods that never heard of Lodestone.
 ;   2. Its unfocus closes a single shared modal menu for every view at once, so
-;      a second panel on screen is left with a stranded cursor. Measured in game
-;      across all four flag configurations, with no mitigation found, and
-;      reported to that backend's author without answer.
-;   3. It publishes no panic key. Meridian UI does, and Lodestone installs no
-;      input handling of its own, so a stranded cursor there would leave killing
-;      the game as the only way out.
+;      a second Prisma panel on screen is left with a stranded cursor when yours
+;      lets go. Measured in game across all four flag configurations, with no
+;      mitigation found, and reported to that backend's author without answer.
+;   3. It publishes no panic key. SINCE 1.27.0 LODESTONE PROVIDES ONE: an input
+;      handler of its own, on the same WebUIPanicKeys chord, measured in game to
+;      see the chord with a Prisma panel focused.
 ;
-; That is a decision, not a permanent ceiling. It reverses if the behaviour
-; changes or is measured to be safe, and the change is invisible to you: the
-; capability goes from False to True and your existing check starts passing.
+; So on Prisma UI, if your panel can open while another mod's Prisma panel is
+; on screen, expect to take its keyboard, and expect its cursor to be stranded
+; when yours lets go. Nothing in this bridge can prevent either.
+;
+; THE CHORD IS NOT THE SAME MECHANISM ON THE TWO BACKENDS, and the difference
+; can reach your page:
+;
+;                    Meridian UI                 Prisma UI
+;   who checks it    the backend                 Lodestone
+;   what it does     toggles focus               releases focus, never gives it
+;   which views      the one holding focus       views of THIS bridge only
+;   your page        never sees the chord        MAY see the chord first
+;
+; The last row was measured: with a Prisma text field focused, Ctrl+Backspace
+; reached the page as a keystroke while Lodestone was releasing the focus. If
+; your page reacts to that chord, it will react before it loses focus. And the
+; chord on Prisma UI does not touch another mod's Prisma panel - that panel is
+; not this bridge's to release.
 ;
 ; ONE VIEW AT A TIME. At most one view created through this bridge holds focus,
 ; and a second asker is REFUSED rather than queued. That is Lodestone's rule, not
@@ -1206,14 +1225,17 @@ Int Function WebUIGetListenerSlotsFree() global native
 ; at once and keys reach both. That was measured in game, with Meridian UI
 ; claiming focus over a focused Prisma UI panel: the two frameworks do not
 ; negotiate focus with each other, and the Prisma UI side never lets go. The
-; panic chord below releases only the Meridian UI side. Nothing in this bridge
+; panic chord below releases only the Meridian UI side - Lodestone's own chord
+; for Prisma UI exists only when Prisma UI is the backend, and even then it
+; releases only views of this bridge. Nothing in this bridge
 ; can prevent it, so if your panel can open while another mod's Prisma UI panel
 ; has focus, plan for that.
 ;
 ; FOCUS IS TAKEN AWAY BEHIND YOUR BACK, ON PURPOSE. Lodestone releases it when a
 ; save is loaded, when a new game starts, and when any menu that pauses the game
-; opens. The player can also drop it at any moment with the backend's own panic
-; chord - Ctrl+Backspace by default, settable as WebUIPanicKeys in
+; opens. The player can also drop it at any moment with the panic chord - the
+; backend's own on Meridian UI, Lodestone's on Prisma UI, the same setting on
+; both - Ctrl+Backspace by default, settable as WebUIPanicKeys in
 ; Data\SKSE\Plugins\Lodestone.ini. YOU CANNOT DISABLE THAT, and you should not
 ; want to: it is what stops a broken page from making the game unplayable.
 ;
@@ -1229,6 +1251,8 @@ Int Function WebUIGetListenerSlotsFree() global native
 ; Returns False, immediately and for a reason you can act on, when: no backend is
 ; present, the backend answers False to "view-focus", the view id is unknown, the
 ; view is not ready yet, the view is hidden, or another view already holds focus.
+; On Prisma UI also when Lodestone could not install its panic chord - focus
+; without a way out is what the bridge will not give. The log says so.
 ;
 ; Call it AFTER WebUIShow. A hidden view is refused, because focus on something
 ; the player cannot see is the exact state the panic chord exists to undo.

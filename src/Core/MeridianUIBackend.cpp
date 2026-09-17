@@ -27,6 +27,7 @@
 #include "WebUIBackend.h"
 
 #include "Config.h"
+#include "WebUIPanicKeys.h"
 
 #include "API.h"
 #include "SKSELoader.h"
@@ -489,113 +490,16 @@ namespace Lodestone::Core
 		// IBrowser::ToggleBrowserFocusByKeys registers the chord inside Meridian,
 		// and the header states the guarantee as a 1.0 contract: the chord is
 		// evaluated for EVERY browser before any focused browser can swallow the
-		// event. Lodestone installs no input sink anywhere - it never has - so
-		// nothing this plugin could write would reach a key the focused browser
-		// already ate.
+		// event and consumes it, so the page never sees the chord. A sink of
+		// Lodestone's promises neither: on the other backend, in game on
+		// 2026-09-17, a focused page received the same chord the sink saw.
 		//
-		// That is also exactly the reason the other backend answers false to
-		// "view-focus": it publishes no equivalent, so there would be no way out
-		// of a state this bridge put the player in.
-
-		// The chord, in RE::BSKeyboardDevice::Keys scan codes.
-		//
-		// Ctrl+Backspace by default: unbound in vanilla Skyrim, reachable with
-		// one hand, and not a chord a page is likely to want for itself.
-		std::uint32_t g_panicKey1 = RE::BSKeyboardDevice::Keys::kLeftControl;
-		std::uint32_t g_panicKey2 = RE::BSKeyboardDevice::Keys::kBackspace;
-
-		// Whether the ini has been read. Once per process, at the first arming.
-		bool g_panicKeysRead = false;
-
-		// Reads one scan code out of an ini value, decimal or 0x hex.
-		//
-		// Returns false for anything it does not understand, INCLUDING a value
-		// out of range, and the caller keeps the default. A typo that silently
-		// became key 0 would disable the escape hatch, which is the one outcome
-		// this file may not produce quietly.
-		bool ParseScanCode(std::string_view a_text, std::uint32_t& a_out)
-		{
-			const std::string trimmed = Config::Trim(a_text);
-			if (trimmed.empty()) {
-				return false;
-			}
-
-			int  base  = 10;
-			auto digits = std::string_view(trimmed);
-			if (digits.size() > 2 && digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X')) {
-				base = 16;
-				digits.remove_prefix(2);
-			}
-
-			unsigned long value = 0;
-			try {
-				std::size_t consumed = 0;
-				value                = std::stoul(std::string(digits), &consumed, base);
-				if (consumed != digits.size()) {
-					return false;
-				}
-			} catch (...) {
-				return false;
-			}
-
-			// The keyboard device's codes are one byte. Anything above that is a
-			// typo, not a key.
-			if (value == 0 || value > 0xFF) {
-				return false;
-			}
-
-			a_out = static_cast<std::uint32_t>(value);
-			return true;
-		}
-
-		// Reads WebUIPanicKeys from Lodestone.ini, once.
-		//
-		// Format is two scan codes separated by '|', matching the shape EquipVeto
-		// already uses in the same file. An unreadable or absent value leaves the
-		// default in place and says so, because a player who tried to set this
-		// and got the default instead needs to know.
-		void ReadPanicKeys()
-		{
-			if (g_panicKeysRead) {
-				return;
-			}
-			g_panicKeysRead = true;
-
-			std::string raw;
-			Config::ForEachPair([&raw](std::string_view a_key, std::string_view a_value) {
-				if (a_key == "webuipanickeys") {
-					raw = a_value;
-				}
-			});
-
-			if (raw.empty()) {
-				return;
-			}
-
-			const auto separator = raw.find('|');
-			if (separator == std::string::npos) {
-				spdlog::warn("MeridianUIBackend: WebUIPanicKeys is '{}', which is not two scan codes "
-							 "separated by '|' - keeping the default Ctrl+Backspace.",
-					raw);
-				return;
-			}
-
-			std::uint32_t key1 = 0;
-			std::uint32_t key2 = 0;
-			if (!ParseScanCode(std::string_view(raw).substr(0, separator), key1) ||
-				!ParseScanCode(std::string_view(raw).substr(separator + 1), key2)) {
-				spdlog::warn("MeridianUIBackend: WebUIPanicKeys is '{}', and at least one half is not a "
-							 "scan code between 1 and 255 - keeping the default Ctrl+Backspace.",
-					raw);
-				return;
-			}
-
-			g_panicKey1 = key1;
-			g_panicKey2 = key2;
-			spdlog::info("MeridianUIBackend: panic chord set from Lodestone.ini to scan codes "
-						 "0x{:02X} + 0x{:02X}.",
-				g_panicKey1, g_panicKey2);
-		}
+		// THE OTHER BACKEND HAS NO SUCH CHORD, and until 1.27.0 that was the
+		// reason it answered false to "view-focus". Since 1.27.0 it gets its
+		// escape hatch from an input sink of Lodestone's, which releases rather
+		// than toggles - see PrismaUIBackend.cpp. The setting is the same one: the
+		// reader moved to WebUIPanicKeys.cpp, and the lines it writes here are
+		// unchanged.
 
 		// Arms or disarms the chord on one browser. GAME THREAD ONLY.
 		//
@@ -609,8 +513,9 @@ namespace Lodestone::Core
 			}
 
 			if (a_arm) {
-				ReadPanicKeys();
-				a_record.browser->ToggleBrowserFocusByKeys(g_panicKey1, g_panicKey2);
+				// Read at the first arming, as it always was.
+				const auto chord = WebUIPanicKeys::Get("MeridianUIBackend");
+				a_record.browser->ToggleBrowserFocusByKeys(chord.first, chord.second);
 			} else {
 				// Zeros disable, per IBrowser.h.
 				a_record.browser->ToggleBrowserFocusByKeys(0, 0);

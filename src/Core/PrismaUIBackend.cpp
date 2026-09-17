@@ -17,13 +17,19 @@
 // PrismaView handles and slot indices and nothing else.
 
 #include "WebUIBackend.h"
+#include "WebUIPanicKeys.h"
 
 #include "PrismaUI_API.h"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace Lodestone::Core
 {
@@ -86,6 +92,308 @@ namespace Lodestone::Core
 		}
 
 		const auto g_thunks = MakeThunkTable(std::make_index_sequence<kWebUIMaxListeners>{});
+
+		// --- The views this backend made ----------------------------------------
+		//
+		// Kept only since 1.27.0, and only for focus: this backend used to need
+		// nothing but the handle the coordinator hands back, and still needs
+		// nothing else for the other operations.
+		//
+		// NO LOCK, the same contract as the Meridian backend's table. Everything
+		// that touches it runs on the main game thread: the view operations
+		// arrive there from the coordinator, and the poll and the panic release
+		// are posted there. The input sink below does NOT read it - it only posts.
+		struct ViewRecord
+		{
+			IWebUIBackend::ViewHandle handle = 0;
+
+			// Whether the view held focus at the last poll.
+			//
+			// OBSERVED, NOT REQUESTED. Focus moves here for reasons this file
+			// never initiates: another Prisma consumer focusing its own view, the
+			// panic chord, a teardown. Only HasFocus() sees those, which is why
+			// the poll asks it rather than remembering what SetFocus sent.
+			bool focused = false;
+		};
+
+		std::vector<ViewRecord> g_views;
+
+		ViewRecord* Find(IWebUIBackend::ViewHandle a_view)
+		{
+			for (auto& record : g_views) {
+				if (record.handle == a_view) {
+					return &record;
+				}
+			}
+			return nullptr;
+		}
+
+		// --- Watching focus -----------------------------------------------------
+		//
+		// WHY A POLL, AND THE SAME ONE THE MERIDIAN BACKEND RUNS. Prisma has a
+		// DOM-ready callback but no focus-changed one; HasFocus() is a question,
+		// so the answer has to be asked for. The alternative - reporting what
+		// SetFocus and ClearFocus requested - is the mirror of intent the
+		// coordinator refused (WebUIBackend.h, FocusChanged), and here it would
+		// be wrong in a measured way: Focus and Unfocus are asynchronous, and a
+		// read in the same frame returns the value from before the command.
+		//
+		// DESIGNED TO CONVERGE, NOT TO BE INSTANT. The mirror lags a real change
+		// by up to one interval. What it must never do is claim focus that does
+		// not exist, and it cannot: it only ever reports what HasFocus answered.
+
+		// How often the views are asked. Same interval as the Meridian backend,
+		// for the same reason: a player cannot tell a tenth of a second from
+		// instant, and the cost is one call per view.
+		constexpr auto kFocusPollInterval = std::chrono::milliseconds(100);
+
+		// How many live views there are. Read by the watcher thread, written on
+		// the game thread.
+		std::atomic<int> g_watchedViews{ 0 };
+
+		// Started at most once per process, at the first view.
+		std::atomic<bool> g_watcherStarted{ false };
+
+		// One pass over every view's focus. GAME THREAD ONLY.
+		void PollFocus()
+		{
+			if (!g_api) {
+				return;
+			}
+
+			for (auto& record : g_views) {
+				const bool nowFocused = g_api->HasFocus(static_cast<PrismaView>(record.handle));
+				if (nowFocused == record.focused) {
+					continue;
+				}
+
+				record.focused = nowFocused;
+
+				try {
+					WebUIBackendCallbacks::FocusChanged(WebUIBackends::PrismaUI(), record.handle, nowFocused);
+				} catch (...) {
+					spdlog::error("PrismaUIBackend: reporting a focus change threw - the bridge's view "
+								  "of who holds focus is now stale.");
+				}
+			}
+		}
+
+		// Sleeps, and posts one PollFocus to the game thread per interval while
+		// any view exists. Never exits - the reasoning is the Meridian backend's
+		// WatcherLoop, and it holds unchanged: a thread that stops and restarts
+		// has a window where a new view goes unwatched.
+		void WatcherLoop()
+		{
+			for (;;) {
+				std::this_thread::sleep_for(kFocusPollInterval);
+
+				if (g_watchedViews.load(std::memory_order_acquire) <= 0) {
+					continue;
+				}
+
+				if (auto* task = SKSE::GetTaskInterface()) {
+					task->AddTask([]() { PollFocus(); });
+				}
+			}
+		}
+
+		void StartWatcher()
+		{
+			bool expected = false;
+			if (g_watcherStarted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+				std::thread(&WatcherLoop).detach();
+			}
+		}
+
+		// --- The panic chord ----------------------------------------------------
+		//
+		// THE PLAYER'S WAY OUT, AND NO CONSUMER CAN TURN IT OFF - the same promise
+		// the Meridian backend keeps, kept a different way because Prisma
+		// publishes no chord of its own.
+		//
+		// AN INPUT SINK OF LODESTONE'S, and it was measured before it was built.
+		// Phase L-U7, E1, in game on 2026-09-17, Prisma UI 1.5.0: with a Prisma
+		// panel focused and a word typed into its text field, a sink on
+		// BSInputDeviceManager received every key, and saw Ctrl+Backspace
+		// complete with HasAnyActiveFocus() true. The probe is parked in the
+		// private work area, not in this repository.
+		//
+		// IT ONLY RELEASES. IT NEVER TOGGLES. Meridian's chord is a toggle and is
+		// safe there only because it is armed on the browser holding focus. This
+		// sink sees every key in the game; a toggle would hand focus to a view
+		// that did not have it, which is the stranded state the chord exists to
+		// undo. For the player the effect is the same on both backends: the chord
+		// gives the game its controls back.
+		//
+		// WHAT IT RELEASES: the views of THIS bridge that hold focus, and nothing
+		// else. A Prisma panel of another mod - the measurement used one - is not
+		// this plugin's to take input from, and the same E1 showed why the test
+		// cannot be HasAnyActiveFocus(): it was already true with only a
+		// third-party overlay on screen. It answers "somebody", not "whom".
+		// Per-view HasFocus() is the question that names the view.
+		//
+		// IT DOES NOT CONSUME THE KEY, AND COULD NOT PROMISE TO. Returning kStop
+		// only skips the sinks registered after this one on the same source
+		// (BSTEvent.h, SendEvent), and the focused page in E1 received the chord
+		// while the sink saw it - a text field lost its word and gained a stray
+		// control character. Whatever Prisma reads keys through is not behind
+		// this sink. Stopping the event anyway would starve the game's own sinks
+		// of half a key press and prevent nothing on the page.
+
+		// The chord, read on the game thread when the sink is installed, read by
+		// the sink on whatever thread the input manager dispatches from. Atomic
+		// so that question does not need an answer.
+		std::atomic<std::uint32_t> g_chordFirst{ 0 };
+		std::atomic<std::uint32_t> g_chordSecond{ 0 };
+
+		// Drops focus from every view of this bridge that holds it. GAME THREAD
+		// ONLY - posted there by the sink.
+		//
+		// Silent when none does: pressing the chord with no panel of this bridge
+		// focused is ordinary, and so is pressing it over another mod's panel.
+		void ReleaseByChord()
+		{
+			if (!g_api) {
+				return;
+			}
+
+			std::size_t released = 0;
+			for (auto& record : g_views) {
+				const auto view = static_cast<PrismaView>(record.handle);
+
+				// Either answer is enough. The poll's value can lag a focus that
+				// just arrived; HasFocus can lag one that just left. An unfocus
+				// sent to a view that was about to lose focus anyway costs
+				// nothing a player could see.
+				if (!record.focused && !g_api->HasFocus(view)) {
+					continue;
+				}
+
+				g_api->Unfocus(view);
+				++released;
+			}
+
+			if (released > 0) {
+				spdlog::info("PrismaUIBackend: panic chord pressed - released focus from {} view(s) of this "
+							 "bridge.",
+					released);
+			}
+		}
+
+		class PanicSink final : public RE::BSTEventSink<RE::InputEvent*>
+		{
+		public:
+			static PanicSink* GetSingleton()
+			{
+				static PanicSink singleton;
+				return &singleton;
+			}
+
+			RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_event,
+				RE::BSTEventSource<RE::InputEvent*>*) override
+			{
+				// Nothing here may throw into the input dispatch loop.
+				try {
+					const auto first  = g_chordFirst.load(std::memory_order_acquire);
+					const auto second = g_chordSecond.load(std::memory_order_acquire);
+					if (!a_event || first == 0 || second == 0) {
+						return RE::BSEventNotifyControl::kContinue;
+					}
+
+					for (auto* event = *a_event; event; event = event->next) {
+						if (event->GetEventType() != RE::INPUT_EVENT_TYPE::kButton ||
+							event->GetDevice() != RE::INPUT_DEVICE::kKeyboard) {
+							continue;
+						}
+
+						const auto*         button = static_cast<const RE::ButtonEvent*>(event);
+						const std::uint32_t code   = button->GetIDCode();
+
+						bool* held = nullptr;
+						if (code == first) {
+							held = &_firstHeld;
+						} else if (code == second) {
+							held = &_secondHeld;
+						} else {
+							continue;
+						}
+
+						if (button->IsUp()) {
+							*held = false;
+							continue;
+						}
+
+						if (!button->IsDown()) {
+							continue;
+						}
+
+						*held = true;
+
+						// Complete on whichever key goes down last, and again on
+						// every re-press while the other is still held - the shape
+						// Meridian's header states for its own chord. The same
+						// key set twice is a one-key chord.
+						const bool complete = first == second ? _firstHeld : (_firstHeld && _secondHeld);
+						if (!complete) {
+							continue;
+						}
+
+						if (auto* task = SKSE::GetTaskInterface()) {
+							task->AddTask([]() { ReleaseByChord(); });
+						}
+					}
+				} catch (...) {
+					spdlog::error("PrismaUIBackend: the panic chord sink threw - that key press was not "
+								  "checked.");
+				}
+
+				return RE::BSEventNotifyControl::kContinue;
+			}
+
+		private:
+			PanicSink()                            = default;
+			PanicSink(const PanicSink&)            = delete;
+			PanicSink& operator=(const PanicSink&) = delete;
+
+			// Held state, from the events this sink sees. Only the dispatching
+			// thread touches these.
+			bool _firstHeld  = false;
+			bool _secondHeld = false;
+		};
+
+		// Whether the sink is registered. GAME THREAD ONLY. Installed at most
+		// once and never removed, like the coordinator's menu watch.
+		bool g_panicSinkInstalled = false;
+
+		// Installs the sink if it is not in yet. GAME THREAD ONLY.
+		//
+		// At the first view rather than at a load seam, for two reasons: the
+		// input device manager is null early in the load (a fact of the engine),
+		// and a session whose backend is Meridian, or that never opens a panel,
+		// has no business watching the keyboard.
+		void InstallPanicSink()
+		{
+			if (g_panicSinkInstalled) {
+				return;
+			}
+
+			auto* manager = RE::BSInputDeviceManager::GetSingleton();
+			if (!manager) {
+				spdlog::error("PrismaUIBackend: the input device manager does not exist yet - the panic "
+							  "chord is not installed, and focus will be refused until it is.");
+				return;
+			}
+
+			const auto chord = WebUIPanicKeys::Get("PrismaUIBackend");
+			g_chordFirst.store(chord.first, std::memory_order_release);
+			g_chordSecond.store(chord.second, std::memory_order_release);
+
+			manager->AddEventSink(PanicSink::GetSingleton());
+			g_panicSinkInstalled = true;
+
+			spdlog::info("PrismaUIBackend: panic chord installed on scan codes 0x{:02X} + 0x{:02X}.",
+				chord.first, chord.second);
+		}
 
 		// --- The backend --------------------------------------------------------
 
@@ -163,13 +471,18 @@ namespace Lodestone::Core
 				// because that is genuinely the answer to a question it did not
 				// mean to ask.
 				//
-				// False here. The reason is long and belongs with the code it
-				// governs - see SetFocus below. In one line: the framework
-				// captures input per process rather than per view, its unfocus
-				// strands a second view's cursor, and it publishes no panic key
-				// to escape with.
+				// TRUE SINCE 1.27.0. It answered false from 1.22.0 to 1.26.x,
+				// for three reasons kept with the code they governed - see the
+				// focus section below, where they stay as history. The one that
+				// decided it was the missing escape hatch, and that is what 1.27.0
+				// added: an input sink of Lodestone's with the WebUIPanicKeys
+				// chord. The other two are still true and are now the consumer's
+				// to weigh, stated in Lodestone.psc.
+				//
+				// A consumer that already asked this question needs no change:
+				// it gets true and takes the interactive path.
 				if (capability == "view-focus") {
-					return false;
+					return true;
 				}
 
 				// "view-order": can a view's stacking order be set.
@@ -191,14 +504,54 @@ namespace Lodestone::Core
 			// opaque handle. It is in the signature for Meridian's sake.
 			ViewHandle CreateView(const char*, const char* a_viewPath) override
 			{
-				return g_api ? static_cast<ViewHandle>(g_api->CreateView(a_viewPath, &OnDomReady)) : 0;
+				if (!g_api) {
+					return 0;
+				}
+
+				const auto handle = static_cast<ViewHandle>(g_api->CreateView(a_viewPath, &OnDomReady));
+				if (handle == 0) {
+					return 0;
+				}
+
+				// Watched from birth, so a view that some other path focuses is
+				// reported like one the bridge focused. The escape hatch goes in
+				// with the first view, before any consumer can ask for focus.
+				if (!Find(handle)) {
+					g_views.push_back(ViewRecord{ handle });
+					g_watchedViews.fetch_add(1, std::memory_order_acq_rel);
+				}
+				InstallPanicSink();
+				StartWatcher();
+
+				return handle;
 			}
 
 			void DestroyView(ViewHandle a_view) override
 			{
-				if (g_api) {
-					g_api->Destroy(static_cast<PrismaView>(a_view));
+				if (!g_api) {
+					return;
 				}
+
+				const auto view = static_cast<PrismaView>(a_view);
+
+				for (std::size_t i = 0; i < g_views.size(); ++i) {
+					if (g_views[i].handle == a_view) {
+						// A view torn down while holding focus would take the
+						// capture with it into a handle nobody can name any more,
+						// and the chord only reaches views still in this table.
+						// Whether Prisma releases on its own is not known here, so
+						// it is not left to chance.
+						if (g_views[i].focused || g_api->HasFocus(view)) {
+							g_api->Unfocus(view);
+						}
+
+						g_watchedViews.fetch_sub(1, std::memory_order_acq_rel);
+						g_views.erase(g_views.begin() + static_cast<std::ptrdiff_t>(i));
+						break;
+					}
+				}
+
+				g_api->Destroy(view);
 			}
 
 			void Show(ViewHandle a_view) override
@@ -229,14 +582,18 @@ namespace Lodestone::Core
 				}
 			}
 
-			// --- Focus, which this backend declines ------------------------
+			// --- Focus -------------------------------------------------------
 			//
-			// UNREACHABLE, NOT UNIMPLEMENTED. HasCapability answers false to
-			// "view-focus", and the coordinator asks that before it dispatches,
-			// so neither of these is ever called. They log if they are, because
-			// a call arriving here means the coordinator's gate broke and a
-			// silent no-op would hide that.
+			// HISTORY FIRST, BECAUSE IT EXPLAINS THE CODE BELOW. From 1.22.0 to
+			// 1.26.x this backend answered false to "view-focus" and these two
+			// were stubs that logged an error if reached. The comment that
+			// justified it is kept as it was written, between the two rules
+			// below, and it is still right about facts 1 and 2. Fact 3 stopped
+			// being true in 1.27.0 (2026-09-17, phase L-U7): Lodestone now has
+			// an input sink, measured in game to see the chord with a Prisma
+			// panel focused - see the panic chord section above.
 			//
+			// ------------------------------------------------------------------
 			// WHY THE CAPABILITY IS false, AND IT IS NOT THAT THE API IS
 			// MISSING. PrismaUI_API.h has Focus, Unfocus, HasFocus and
 			// HasAnyActiveFocus, all of them per view, and calling them would
@@ -272,17 +629,92 @@ namespace Lodestone::Core
 			// queued. Growing false into true is invisible to every consumer
 			// that already asks first, which is why the capability shipped
 			// before the feature.
-			bool SetFocus(ViewHandle) override
+			// ------------------------------------------------------------------
+			//
+			// WHAT 1.27.0 DOES WITH FACTS 1 AND 2: says them to the consumer
+			// instead of deciding for it. Focusing a view here takes the keyboard
+			// from every Prisma panel in the game, including mods that never
+			// heard of Lodestone, and an unfocus closes the focus menu for all of
+			// them. Lodestone.psc states both where a consumer reads
+			// "view-focus".
+			//
+			// THE ASYNCHRONY, measured by a sibling project of this tree and
+			// relied on below: Focus and Unfocus take effect a task-queue turn
+			// later, and HasFocus read in the same frame answers from before the
+			// command. Focus returns early without reinstalling keyboard capture
+			// when HasFocus already answers true, even stale. And Focus on a
+			// document that has not loaded silently loses the framework's
+			// focus-tracking script - which the coordinator already rules out, by
+			// dispatching only for a view whose DOM-ready has fired.
+			//
+			// THE DEFERRED UNFOCUS, MEASURED HERE, which is the question the
+			// comment above said the false was waiting on. Phase L-U7, E4, in
+			// game on 2026-09-17, Prisma UI 1.5.0, with a temporary probe around
+			// every Unfocus this file sends: six calls, four from ClearFocus and
+			// two from the panic chord. In ALL SIX, HasFocus and
+			// HasAnyActiveFocus both still answered true in the same call, right
+			// after Unfocus returned. In all six the next poll saw HasFocus false
+			// and HasAnyActiveFocus false, 49 to 73 ms later. So the unfocus is
+			// deferred, it lands within one poll interval, and the mirror
+			// converges - it never went on claiming a focus that had left.
+			//
+			// What that window means for the code: inside those tens of
+			// milliseconds a read of HasFocus is stale true. SetFocus in that
+			// window answers true without focusing, and the poll then reports
+			// the loss; ClearFocus or the chord in that window send a second
+			// Unfocus, which changes nothing a player can see. Both converge.
+			//
+			// THE FLAGS: pauseGame false and disableFocusMenu false. Not pausing
+			// is what the Meridian backend does through this same bridge - a panel
+			// is an overlay, and the coordinator's automatic release keys on menus
+			// that pause. The focus menu stays enabled because it is what gives
+			// the player a cursor; the four-way matrix changed nothing about the
+			// stranded cursor, so there is no mitigation to choose instead.
+			bool SetFocus(ViewHandle a_view) override
 			{
-				spdlog::error("PrismaUIBackend: SetFocus reached a backend that answers false to "
-							  "\"view-focus\" - the coordinator should not have dispatched this.");
-				return false;
+				if (!g_api || !Find(a_view)) {
+					return false;
+				}
+
+				// No escape hatch, no focus. This is the condition the capability
+				// was false for, so it is checked where the focus is given, not
+				// only assumed from the view having been created.
+				InstallPanicSink();
+				if (!g_panicSinkInstalled) {
+					spdlog::error("PrismaUIBackend: refusing focus - the panic chord is not installed, "
+								  "and focus without a way out is what this backend may not give.");
+					return false;
+				}
+
+				const auto view = static_cast<PrismaView>(a_view);
+
+				// Already focused, or a stale true from an unfocus still in the
+				// queue. Either way Focus would return without doing anything,
+				// so the call is skipped and the poll reports what settles.
+				if (g_api->HasFocus(view)) {
+					return true;
+				}
+
+				return g_api->Focus(view, false, false);
 			}
 
-			void ClearFocus(ViewHandle) override
+			// Safe on a view that does not hold focus, as the interface requires
+			// - and here that takes a guard, not just a call. Unfocus closes the
+			// focus menu of EVERY Prisma view, so an unguarded one on a view that
+			// was never focused would take the cursor from another mod's panel.
+			void ClearFocus(ViewHandle a_view) override
 			{
-				spdlog::error("PrismaUIBackend: ClearFocus reached a backend that answers false to "
-							  "\"view-focus\" - the coordinator should not have dispatched this.");
+				auto* record = Find(a_view);
+				if (!g_api || !record) {
+					return;
+				}
+
+				const auto view = static_cast<PrismaView>(a_view);
+				if (!record->focused && !g_api->HasFocus(view)) {
+					return;
+				}
+
+				g_api->Unfocus(view);
 			}
 		};
 
