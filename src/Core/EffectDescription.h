@@ -2,14 +2,17 @@
 // Lodestone - Shared SKSE framework
 //
 // Module: EffectDescription
-// Reads a MagicEffect's description text (EffectSetting::magicItemDescription,
-// the DNAM field) for Papyrus. Read-only and stateless: no hook, no cosave,
-// nothing cached - it is a separate module from MagicScaling on purpose, because
-// that one owns engine hooks and registered channels and this owns neither.
+// Reads and writes a MagicEffect's description text
+// (EffectSetting::magicItemDescription, the DNAM field) for Papyrus. No hook,
+// no cosave: a write goes straight to the field, queued onto the game thread,
+// and the original text for a written effect is kept in memory for the
+// session so Clear can restore it. It is a separate module from MagicScaling
+// on purpose, because that one owns engine hooks and registered channels and
+// this owns neither.
 //
 // Papyrus-facing script: Lodestone.psc
 //
-// Phase L-F2
+// Phase L-F2 (read), L-F4 (write)
 
 #pragma once
 

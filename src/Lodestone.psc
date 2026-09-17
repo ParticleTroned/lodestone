@@ -305,6 +305,70 @@ Bool Function RegisterMagicCostChannel(GlobalVariable akMultiplier, GlobalVariab
 ;     including any leading or trailing whitespace.
 String Function GetEffectDescription(MagicEffect akEffect) global native
 
+; --- Writing a magic effect description (added in DLL 1.29.0) ---------------
+;
+; Requires Lodestone.GetVersion() >= 1029000 (1.29.0).
+;
+; SetEffectDescription queues a write of asText onto akEffect's description -
+; the same field GetEffectDescription reads. ClearEffectDescription queues a
+; restore to whatever that effect held before your first Set call in this
+; session. GetEffectDescription reflects the written text as soon as it lands;
+; it did not change, it is reading the same field you just wrote.
+;
+; THE WRITE DOES REACH THE MAGIC MENU CARD. MEASURED IN GAME, 2026-09-17,
+; which is the one thing about this pair nobody had measured: a sentence
+; written into vanilla Firebolt's and Flames' effects showed on both cards,
+; in place of the vanilla text. The menu reads the field when it draws the
+; card; it does not cache the record's text from load.
+;
+; THE Bool THESE TWO RETURN MEANS "ACCEPTED", NOT "WRITTEN". The write happens
+; on the game thread and is queued rather than immediate, so the native
+; returns before it lands. True is a promise the write was queued, not
+; confirmation the card already shows it. False means nothing was queued: a
+; None effect, or (Clear only) an effect this plugin never wrote in this
+; session - that second case is a normal answer, not a failure.
+;
+; ONLY A MagicEffect DESCRIPTION IS WRITABLE. A Spell has its own description
+; field, and it is NOT writable - it is a string-table id under the hood, the
+; same kind of field BookFramework had to hook around rather than write
+; directly. Do not ask for a per-Spell version of this pair; there is nothing
+; to point it at.
+;
+; AND A SPELL'S OWN DESCRIPTION HIDES YOURS. MEASURED IN GAME, 2026-09-17: when
+; the Spell carrying your effect HAS a Description of its own, the magic menu
+; shows THAT and never composes the effect lines - so a description you write
+; onto the effect is invisible on that card no matter how correct the write
+; was. The measurement was Fusion Meditation, a LesserPower whose SPEL carries
+; "Center the mind...": the effect's field was confirmed written, and the card
+; showed the spell's sentence anyway.
+;
+; What this means for you, and it is the difference between working and
+; silently doing nothing: THIS PAIR IS FOR SPELLS WITH NO DESCRIPTION OF THEIR
+; OWN - which is most of them, vanilla Firebolt and Flames included, and every
+; spell built at runtime from a template that has none. If your spell does have
+; one, you cannot remove it from Papyrus (see above: not writable), so the
+; effect text will not show and nothing here can make it.
+;
+; WRITING A MagicEffect READ FROM A PLUGIN CHANGES IT FOR THE WHOLE LOAD
+; ORDER, FOR THE REST OF THE SESSION - every spell that uses that effect shows
+; your text, not just yours. CLONE THE EFFECT FIRST if you do not want that;
+; cloning is your job, not this plugin's. This is the same rule already
+; written for casting type and delivery, restated here because the mistake is
+; the same shape.
+;
+; SESSION-SCOPED, LIKE BookFramework: nothing here is saved. A written
+; effect's description reverts to its record text on the next load, and if you
+; want it back, you call SetEffectDescription again - the same reapplication
+; your mod already does for anything else session-scoped.
+;
+; Set WITH AN EMPTY STRING WRITES AN EMPTY DESCRIPTION. It is not a shortcut
+; for Clear: the two do different things; a later Clear on that same effect
+; still restores the ORIGINAL text, captured before this call, not the empty
+; string you just wrote. GetEffectDescription treats whitespace-only text as
+; "no description" ("") the same way it always has.
+Bool Function SetEffectDescription(MagicEffect akEffect, String asText) global native
+Bool Function ClearEffectDescription(MagicEffect akEffect) global native
+
 ; --- Spell batch readers (added in DLL 1.25.0) ------------------------------
 ;
 ; Requires Lodestone.GetVersion() >= 1025000 (1.25.0).
