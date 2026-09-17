@@ -90,10 +90,23 @@ namespace Lodestone::Core::MenuPrompt
 			// entries alone, a sentence title came out cut to its first words
 			// (L-U8 E6, measured).
 			float titleWidth{ 0.0f };
+
+			// List prompt only: the size handed to ImGui on the frame the
+			// window appeared. Compared with the size at close to tell a
+			// window the player resized from one that only widened to fit.
+			float placedWidth{ 0.0f };
+			float placedHeight{ 0.0f };
 		};
 
 		std::mutex              g_lock;
 		std::unique_ptr<Active> g_active;
+
+		// The list size the player last dragged to, in pixels. Zero until the
+		// player resizes one. Shared by every list prompt from every mod, and
+		// kept for this run of the game only - nothing is written to disk, by
+		// the author's decision. Guarded by g_lock.
+		float g_listWidth{ 0.0f };
+		float g_listHeight{ 0.0f };
 		std::atomic<bool>       g_busy{ false };
 
 		SMF::Model::WindowInterface* g_listWindow{ nullptr };
@@ -291,8 +304,25 @@ namespace Lodestone::Core::MenuPrompt
 				float screenW = 0.0f;
 				float screenH = 0.0f;
 				ScreenSize(screenW, screenH);
+				// The player's last size if there is one, otherwise a default
+				// wider than tall - sized to the entries alone, a short menu
+				// came out as a narrow column 70% of the screen high. Either
+				// way the width still grows when an entry or the title would
+				// not fit, and that growth is not remembered as a preference.
 				const float contentWidth = active.titleWidth > active.widest ? active.titleWidth : active.widest;
-				PlaceWindow(contentWidth + 80.0f, screenH * 0.7f, screenW, screenH);
+				float width = g_listWidth > 0.0f ? g_listWidth : screenW * 0.37f;
+				const float height = g_listHeight > 0.0f ? g_listHeight : screenH * 0.42f;
+				if (width < contentWidth + 80.0f) {
+					width = contentWidth + 80.0f;
+				}
+				if (width > screenW * 0.9f) {
+					width = screenW * 0.9f;
+				}
+				if (active.placedWidth == 0.0f) {
+					active.placedWidth = width;
+					active.placedHeight = height;
+				}
+				PlaceWindow(width, height, screenW, screenH);
 
 				int  picked = -1;
 				bool cancelled = false;
@@ -331,10 +361,24 @@ namespace Lodestone::Core::MenuPrompt
 				if (EscapePressed()) {
 					cancelled = true;
 				}
+				// Read inside the window: GetWindowSize answers for the window
+				// being drawn, and after End that is no longer this one.
+				const auto size = IG::GetWindowSize();
 				IG::End();
 
 				if (picked >= 0 || cancelled) {
 					LogInputState("list", "on close");
+					// Remembered only when the player changed it. A window that
+					// kept the size it was given - default, remembered, or
+					// widened to fit - leaves the preference as it was.
+					const float dw = size.x - active.placedWidth;
+					const float dh = size.y - active.placedHeight;
+					if (dw > 1.0f || dw < -1.0f || dh > 1.0f || dh < -1.0f) {
+						g_listWidth = size.x;
+						g_listHeight = size.y;
+						spdlog::info("MenuPrompt: list prompt resized by the player to {} x {} px - kept for this session.",
+							size.x, size.y);
+					}
 				}
 				if (picked >= 0) {
 					Result result;
