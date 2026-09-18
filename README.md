@@ -16,7 +16,7 @@ Lodestone was extracted from the Intelligence Matters SKSE plugin, which is its 
 
 **1.9.0 makes every channel multi-contributor.** Until 1.8.2 a channel had one owner: the first mod to register won it for the session, and a second mod registering a different pair of globals was warned in the log and refused. That is fine while one mod uses a channel and fails the moment two do - the loser dies quietly and its author gets a bug report with no visible cause. From 1.9.0 every registrant contributes and the DLL composes them (multipliers by product, offsets by sum). **Existing consumers need to change nothing**: no signature moved, and while a mod is the only registrant the numbers it gets are the same ones it got before. See [Channels and composition](#channels-and-composition).
 
-Currently implemented. Every module is Core - it never knows a consumer by name. The Domain layer described in CONVENTIONS exists but is currently empty.
+Currently implemented. Every module is Core - it never knows a consumer by name. The Domain layer - modules that know a consumer by name - is part of the design but is currently empty.
 
 | Module | Since | Papyrus surface |
 | ------ | ----- | --------------- |
@@ -67,7 +67,7 @@ The reason is where the work has to happen. Applying the state from a Papyrus ca
 
 **Gate the fall on 1013002.** The two functions exist from 1.12.0, but nothing they did held the actor down until 1.13.2. The knockout gate below is unchanged.
 
-**Gate Incapacitation on 1.11.0, not 1.10.0.** The functions exist in 1.10.0, but `KnockoutActor()` refused every actor there: it read the life state through the C++ base-class hierarchy, which in a multi-runtime build does not point at the running game's layout, so it saw the same constant for every actor. 1.11.0 reads it through `AsActorState()` and adds `GetActorLifeState()`, which reports the number a consumer would otherwise have to infer from a refusal. The trap and how to avoid it are written up in `CONVENTIONS.md`.
+**Gate Incapacitation on 1.11.0, not 1.10.0.** The functions exist in 1.10.0, but `KnockoutActor()` refused every actor there: it read the life state through the C++ base-class hierarchy, which in a multi-runtime build does not point at the running game's layout, so it saw the same constant for every actor. 1.11.0 reads it through `AsActorState()` and adds `GetActorLifeState()`, which reports the number a consumer would otherwise have to infer from a refusal. The trap and how to avoid it are explained at the life-state readers in `src/Core/Incapacitation.cpp`.
 
 All functions are global natives on the `Lodestone` script, so they are called as `Lodestone.GetVersion()`. Full signatures and per-function notes are in `Lodestone.psc`, which is the authoritative reference - a consumer copies that file into its own scripts.
 
@@ -215,7 +215,7 @@ The plugin writes to `Documents/My Games/Skyrim Special Edition/SKSE/Lodestone.l
 
 ## Contributing
 
-Read `CONVENTIONS.md` first. Its top half is a core shared with the author's other C++/SKSE projects and is not edited in this repository; the `Project appendix` at the bottom is this project's own - the layer split, the log file, and the framework policy that governs the Papyrus API.
+The coding conventions live in the author's private workspace, not in this repository.
 
 The one thing worth knowing up front: this codebase documents *why*, with evidence. Hook targets, rejected alternatives and non-obvious engine behavior are explained inline, citing the trace that established them. A change that alters behavior is expected to say what it observed, not what it assumed.
 
