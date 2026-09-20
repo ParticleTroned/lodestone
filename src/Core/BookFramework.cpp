@@ -11,8 +11,8 @@
 // page text as a raw BSString the record cannot hold. Its implementation is in git
 // history. Production hooks that function directly.
 //
-// EXCEPTION SAFETY: a C++ exception escaping the hook into the engine is undefined
-// behavior. The thunk wraps its body and always calls the original exactly once.
+// Text lookup, conversion and debug logging are guarded. Native forwarding stays
+// outside that handler so an exception from the original cannot cause a retry.
 //
 // Phase L1 - Stage C.2
 
@@ -20,7 +20,10 @@
 
 #include <safetyhook.hpp>
 
+#include <cstddef>
+#include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -72,7 +75,7 @@ namespace Lodestone::Core::BookFramework
 		SafetyHookInline g_openBookHook{};
 
 		// -------------------------------------------------------------------
-		// Hook: the game's book-open function (behind BookMenu::OpenBookMenu)
+		// Hook: the game's book-open function (behind BookMenu::OpenMenu_Impl)
 		//
 		// The page text arrives as the first argument, a raw BSString. If the book
 		// has stored text, we hand the original the stored string instead; otherwise
@@ -80,35 +83,41 @@ namespace Lodestone::Core::BookFramework
 		// once on every path, so a book with no stored text - or any failure here -
 		// opens exactly as vanilla would.
 		//
-		// BSString caps at 64 KB through its 16-bit size field, matching the
-		// engine's own limit on book text.
+		// Reserve the terminator so BSString's 16-bit length increment cannot wrap.
 		//
 		// VR also retains a ninth NiAVObject* argument until the menu closes;
 		// dropping it makes the engine treat an unrelated stack slot as that object.
 		// -------------------------------------------------------------------
 		struct OpenBookMenuHook
 		{
+			static constexpr std::size_t kMaxTextLength = (std::numeric_limits<RE::BSString::size_type>::max)() - 1;
+
 			template <class... SceneArgs>
 			static void thunk(const RE::BSString& a_description, const RE::ExtraDataList* a_extraList,
 				RE::TESObjectREFR* a_ref, RE::TESObjectBOOK* a_book, const RE::NiPoint3& a_pos,
 				const RE::NiMatrix3& a_rot, float a_scale, bool a_useDefaultPos, SceneArgs... a_sceneArgs)
 			{
 				const RE::BSString* desc = &a_description;
-				RE::BSString        replacement;
+				std::optional<RE::BSString> replacement;
 
 				try {
 					if (a_book) {
 						std::string text;
 						if (LookupText(a_book->GetFormID(), text)) {
-							replacement = RE::BSString{ std::string_view{ text } };
-							desc = &replacement;
+							if (text.size() > kMaxTextLength) {
+								spdlog::warn("BookFramework: stored text for 0x{:08X} exceeds {} bytes; using vanilla text.",
+									a_book->GetFormID(), kMaxTextLength);
+							} else {
+								// Construct in place: BSString move assignment does not release its old buffer.
+								desc = &replacement.emplace(std::string_view{ text });
 
-							if (ShouldLogOpens()) {
-								const char* name = a_book->GetName();
-								spdlog::debug("BookFramework: serving stored text for '{}' (0x{:08X}), {} chars.",
-									(name && *name) ? name : "<unnamed>",
-									a_book->GetFormID(),
-									text.size());
+								if (ShouldLogOpens()) {
+									const char* name = a_book->GetName();
+									spdlog::debug("BookFramework: serving stored text for '{}' (0x{:08X}), {} chars.",
+										(name && *name) ? name : "<unnamed>",
+										a_book->GetFormID(),
+										text.size());
+								}
 							}
 						}
 					}

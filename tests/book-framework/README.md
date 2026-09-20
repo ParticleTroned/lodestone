@@ -14,11 +14,15 @@ function pointer using the explicit types supplied by the production hook.
 The engine functions are not inlined, so an x64 Windows build exercises the
 register and stack argument boundary, including VR's ninth argument.
 
-Thirty cases cover runtime hook selection, null/non-null VR scene pointers,
-both position flags, unchanged text, replacement text, empty replacement,
-replacement failure and null books. They check all arguments, reference
-identity, description lifetime during the call and exactly one original
-invocation. Compile-time checks enforce the distinct native signatures.
+One hundred eight cases cover runtime hook selection, null/non-null VR scene
+pointers, world/inventory reference arguments, both position flags,
+unchanged text, replacement text, empty replacement, replacement failure,
+null books, a logging exception after replacement construction, and stored
+text lengths of 65534, 65535 and 65536 bytes. They
+check all arguments, reference identity, replacement lifetime and exactly
+one original invocation. Construction counters reject unnecessary default
+game strings, move assignment and retained temporary strings. Compile-time
+checks enforce the distinct native signatures.
 
 These checks do not install an actual SafetyHook detour, allocate engine
 objects, or validate in-game book rendering and object lifetime. Those

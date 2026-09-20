@@ -18,6 +18,16 @@ arguments on both success and fallback. No scene-object dereference or
 ownership operation belongs in the hook. Supplying null unconditionally
 would discard the native caller's source-object state.
 
+Replacement text is constructed in place only after a stored-text lookup
+succeeds and remains alive until the native call returns. This avoids
+allocating an empty game string for passthrough opens and avoids the pinned
+CommonLib `BSString` move assignment, which does not release its old
+buffer. Catchable C++ exceptions during construction or debug logging
+restore the original description while preserving all other arguments.
+Stored text above 65534 bytes also falls back to the original description
+with a warning. The limit reserves the terminator in `BSString`'s 16-bit
+length arithmetic; its constructor does not safely truncate longer input.
+
 The standalone regression under `tests/book-framework` exercises the
 production forwarding code with both signatures. It does not install a
 real SafetyHook detour or validate game object lifetime. An in-game retest
